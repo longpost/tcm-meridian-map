@@ -1,13 +1,15 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import InlineSvg from "../components/InlineSvg";
+import InlineSvg, { type ActivePick } from "../components/InlineSvg";
 import MeridianPanel from "../components/MeridianPanel";
 import { MERIDIANS, type MeridianId } from "../lib/meridians";
+import { ACUPOINTS } from "../lib/acupoints";
 
 type Mode = "twelve" | "extra";
-const STORAGE_KEY = "tcm_meridian_stroke_map_v1";
+const STORAGE_KEY = "tcm_meridian_pick_map_v2";
 
+// mapping key = `${stroke}|${groupKey}` -> MeridianId
 function loadMap(): Record<string, MeridianId> {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -17,24 +19,26 @@ function loadMap(): Record<string, MeridianId> {
     return {};
   }
 }
-
 function saveMap(map: Record<string, MeridianId>) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
   } catch {}
 }
 
+function makeKey(p: ActivePick) {
+  return `${p.stroke}|${p.groupKey}`;
+}
+
 export default function Page() {
   const [mode, setMode] = useState<Mode>("twelve");
-  const [activeStroke, setActiveStroke] = useState<string | null>(null);
-  const [strokes, setStrokes] = useState<string[]>([]);
-  const [q, setQ] = useState("");
+  const [activePick, setActivePick] = useState<ActivePick | null>(null);
   const [selectedMeridian, setSelectedMeridian] = useState<MeridianId>("LU");
-  const [strokeToMeridian, setStrokeToMeridian] = useState<Record<string, MeridianId>>({});
   const [bindMode, setBindMode] = useState<boolean>(false);
+  const [pickToMeridian, setPickToMeridian] = useState<Record<string, MeridianId>>({});
+  const [q, setQ] = useState("");
 
   useEffect(() => {
-    setStrokeToMeridian(loadMap());
+    setPickToMeridian(loadMap());
   }, []);
 
   const src =
@@ -51,13 +55,10 @@ export default function Page() {
     else setMode("twelve");
   }, [selectedMeridian]);
 
-  const meridianToStroke = useMemo(() => {
-    const inv: Record<string, string> = {};
-    Object.entries(strokeToMeridian).forEach(([stroke, mid]) => {
-      inv[mid] = stroke;
-    });
-    return inv as Record<MeridianId, string | undefined>;
-  }, [strokeToMeridian]);
+  const selectedInfo = useMemo(
+    () => MERIDIANS.find((m) => m.id === selectedMeridian) ?? null,
+    [selectedMeridian]
+  );
 
   const filteredMeridians = useMemo(() => {
     const t = q.trim().toLowerCase();
@@ -69,10 +70,15 @@ export default function Page() {
     );
   }, [q]);
 
+  const labels = useMemo(() => {
+    const pts = ACUPOINTS[selectedMeridian] ?? [];
+    return pts.map((p) => ({ code: p.code, zh: p.zh }));
+  }, [selectedMeridian]);
+
   const clearAllBindings = () => {
-    setStrokeToMeridian({});
+    setPickToMeridian({});
     saveMap({});
-    setActiveStroke(null);
+    setActivePick(null);
     setBindMode(false);
   };
 
@@ -82,11 +88,11 @@ export default function Page() {
         <div>
           <div style={{ fontSize: 22, fontWeight: 950 }}>经络互动图（科普）</div>
           <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
-            说明：按钮若未绑定会进入“绑定模式”，你点左图对应经络线一次就行。
+            现在是“分组高亮 + 流动发光”。点线可同步选中 LU/LI 等。
           </div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={() => { setActiveStroke(null); setBindMode(false); }}>
+          <button onClick={() => { setActivePick(null); setBindMode(false); }}>
             清除高亮
           </button>
           <button onClick={clearAllBindings}>
@@ -98,24 +104,27 @@ export default function Page() {
       <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1.35fr 1fr", gap: 16 }}>
         <InlineSvg
           src={src}
-          activeStroke={activeStroke}
-          onPick={({ stroke }) => {
-            if (!stroke) return;
+          activePick={activePick}
+          labels={activePick ? labels : []}
+          onPick={(p) => {
+            // 普通点线：先高亮
+            setActivePick(p);
 
-            // 绑定模式：点到哪条线就绑定到当前经络，并立刻高亮
+            const key = makeKey(p);
+
+            // 如果处于绑定模式：把这条线绑定到当前经络
             if (bindMode) {
-              const next = { ...strokeToMeridian, [stroke]: selectedMeridian };
-              setStrokeToMeridian(next);
+              const next = { ...pickToMeridian, [key]: selectedMeridian };
+              setPickToMeridian(next);
               saveMap(next);
-              setActiveStroke(stroke);
               setBindMode(false);
               return;
             }
 
-            // 普通模式：直接高亮被点的线颜色
-            setActiveStroke(stroke);
+            // 非绑定模式：若这条线已经绑定过，自动切换选中经络（你要的“旁边 LU/LI 跟着选中”）
+            const mid = pickToMeridian[key];
+            if (mid) setSelectedMeridian(mid);
           }}
-          onStrokesDetected={(list) => setStrokes(list)}
         />
 
         <div style={{ display: "grid", gap: 12 }}>
@@ -131,15 +140,9 @@ export default function Page() {
                     key={id}
                     onClick={() => {
                       setSelectedMeridian(id);
-
-                      const stroke = meridianToStroke[id];
-                      if (stroke) {
-                        setActiveStroke(stroke); // 已绑定：直接高亮
-                        setBindMode(false);
-                      } else {
-                        setActiveStroke(null); // 未绑定：提示去点图
-                        setBindMode(true);
-                      }
+                      // 没有“自动知道哪条线”，所以未绑定就进绑定模式
+                      setActivePick(null);
+                      setBindMode(true);
                     }}
                     style={{
                       padding: "6px 10px",
@@ -156,22 +159,28 @@ export default function Page() {
             </div>
 
             <div style={{ marginTop: 10, fontSize: 12, opacity: 0.85 }}>
-              {meridianToStroke[selectedMeridian] ? (
-                <>✅ 已绑定：点按钮会只高亮该经络（其它会变淡）。</>
-              ) : bindMode ? (
-                <>⚠️ 绑定模式：现在请在左边图上点一下 <b>{selectedMeridian}</b> 的那条线。</>
+              {bindMode ? (
+                <>⚠️ 绑定模式：请在左图上点一下 <b>{selectedMeridian}</b> 的经络线（点到就会高亮 + 保存绑定）。</>
               ) : (
-                <>提示：未绑定的经络，点按钮后再点图一次即可绑定。</>
+                <>提示：点线条会高亮；若之前绑定过，会自动切换右侧 LU/LI 等选中状态。</>
               )}
             </div>
 
             <div style={{ marginTop: 8, fontSize: 12 }}>
-              当前高亮颜色：<code>{activeStroke ?? "（无）"}</code>
+              当前选中经络：<b>{selectedMeridian}</b>{" "}
+              {selectedInfo ? (
+                <span style={{ opacity: 0.7 }}>
+                  · {selectedInfo.zh}
+                </span>
+              ) : null}
             </div>
           </div>
 
-          {/* Panel with acupoints */}
-          <MeridianPanel pickedStroke={activeStroke ?? undefined} selectedMeridian={selectedMeridian} />
+          {/* Panel */}
+          <MeridianPanel
+            pickedStroke={activePick?.stroke}
+            selectedMeridian={selectedMeridian}
+          />
 
           {/* Search list */}
           <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 12 }}>
@@ -188,20 +197,14 @@ export default function Page() {
                 border: "1px solid #ddd",
               }}
             />
-            <div style={{ marginTop: 10, display: "grid", gap: 8, maxHeight: 240, overflow: "auto" }}>
+            <div style={{ marginTop: 10, display: "grid", gap: 8, maxHeight: 220, overflow: "auto" }}>
               {filteredMeridians.map((m) => (
                 <button
                   key={m.id}
                   onClick={() => {
                     setSelectedMeridian(m.id);
-                    const stroke = meridianToStroke[m.id];
-                    if (stroke) {
-                      setActiveStroke(stroke);
-                      setBindMode(false);
-                    } else {
-                      setActiveStroke(null);
-                      setBindMode(true);
-                    }
+                    setActivePick(null);
+                    setBindMode(true);
                   }}
                   style={{
                     textAlign: "left",
@@ -222,45 +225,13 @@ export default function Page() {
             </div>
           </div>
 
-          {/* Debug colors */}
-          <div style={{ border: "1px dashed #ddd", borderRadius: 12, padding: 12 }}>
-            <div style={{ fontWeight: 800, fontSize: 13 }}>检测到的线条颜色（调试）</div>
-            <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 8 }}>
-              {strokes.map((s) => (
-                <button
-                  key={s}
-                  onClick={() => { setActiveStroke(s); setBindMode(false); }}
-                  style={{
-                    display: "flex",
-                    gap: 8,
-                    alignItems: "center",
-                    padding: "6px 10px",
-                    borderRadius: 999,
-                    border: "1px solid #ddd",
-                    background: activeStroke === s ? "#f2f2f2" : "white",
-                    cursor: "pointer"
-                  }}
-                >
-                  <span
-                    style={{
-                      width: 12,
-                      height: 12,
-                      borderRadius: 999,
-                      background: s,
-                      border: "1px solid rgba(0,0,0,0.2)",
-                      display: "inline-block",
-                    }}
-                  />
-                  <code style={{ fontSize: 12 }}>{s}</code>
-                </button>
-              ))}
-              {strokes.length === 0 && <div style={{ fontSize: 12, opacity: 0.7 }}>（加载后会显示）</div>}
-            </div>
+          <div style={{ fontSize: 12, opacity: 0.7 }}>
+            备注：线上穴位名目前是“沿选中经络线均匀排布”（先把交互跑顺、效果跑出来）。
+            如果你要精确到人体位置，就得换/做带穴位坐标的数据层。
           </div>
         </div>
       </div>
     </main>
   );
 }
-
 
