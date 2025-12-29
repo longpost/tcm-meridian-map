@@ -11,27 +11,31 @@ export default function MeridianPanel({
   pickedStroke?: string;
   selectedMeridian: MeridianId;
 }) {
-  const [aq, setAq] = useState("");
+  const [query, setQuery] = useState("");
 
-  const mer = useMemo(
-    () => MERIDIANS.find((m) => m.id === selectedMeridian) ?? null,
-    [selectedMeridian]
-  );
+  const mer = useMemo(() => {
+    return MERIDIANS.find((m) => m.id === selectedMeridian) ?? null;
+  }, [selectedMeridian]);
 
-  const points = ACUPOINTS[selectedMeridian] ?? [];
+  const points = useMemo(() => {
+    return ACUPOINTS[selectedMeridian] ?? [];
+  }, [selectedMeridian]);
 
   const filtered = useMemo(() => {
-    const t = aq.trim();
+    const t = query.trim();
     if (!t) return points;
     const tl = t.toLowerCase();
-    return points.filter((p) => p.code.toLowerCase().includes(tl) || p.zh.includes(t));
-  }, [aq, points]);
+    return points.filter(
+      (p) => p.code.toLowerCase().includes(tl) || p.zh.includes(t)
+    );
+  }, [query, points]);
 
   return (
     <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 12 }}>
       <div style={{ fontWeight: 950, fontSize: 16 }}>
         {mer ? `${mer.id} · ${mer.zh}` : selectedMeridian}
       </div>
+
       {mer && (
         <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
           {mer.en}
@@ -45,7 +49,7 @@ export default function MeridianPanel({
       {mer && (
         <>
           <div style={{ marginTop: 10, fontWeight: 800 }}>科普简介</div>
-          <div style={{ marginTop: 6, lineHeight: 1.5 }}>{mer.blurb}</div>
+          <div style={{ marginTop: 6, lineHeight: 1.55 }}>{mer.blurb}</div>
         </>
       )}
 
@@ -53,13 +57,14 @@ export default function MeridianPanel({
 
       {points.length === 0 ? (
         <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
-          这条经络的穴位列表我还没填完（目前已补：LU、LI、任脉、督脉）。你要我下一步一次性把 14 条全补齐，我就直接补到文件里。
+          这条经络的穴位列表还没填完（目前已补：LU、LI、任脉、督脉）。你要我把剩下的经络一次性补齐，我就直接补到{" "}
+          <code>lib/acupoints.ts</code> 里。
         </div>
       ) : (
         <>
           <input
-            value={aq}
-            onChange={(e) => setAq(e.target.value)}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
             placeholder="搜穴位：LU7 / 合谷 / DU20 ..."
             style={{
               marginTop: 8,
@@ -67,10 +72,19 @@ export default function MeridianPanel({
               padding: "8px 10px",
               borderRadius: 10,
               border: "1px solid #ddd",
+              outline: "none",
             }}
           />
 
-          <div style={{ marginTop: 10, display: "grid", gap: 8, maxHeight: 360, overflow: "auto" }}>
+          <div
+            style={{
+              marginTop: 10,
+              display: "grid",
+              gap: 8,
+              maxHeight: 360,
+              overflow: "auto",
+            }}
+          >
             {filtered.map((p) => (
               <div
                 key={p.code}
@@ -83,13 +97,17 @@ export default function MeridianPanel({
                 <div style={{ fontWeight: 850 }}>
                   {p.code} · {p.zh}
                 </div>
-                {p.en && (
+                {p.en ? (
                   <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
                     {p.en}
                   </div>
-                )}
+                ) : null}
               </div>
             ))}
+          </div>
+
+          <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>
+            共 {filtered.length} / {points.length} 个穴位
           </div>
         </>
       )}
