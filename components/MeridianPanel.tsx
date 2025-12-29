@@ -1,7 +1,8 @@
 "use client";
 
 import React from "react";
-import { MERIDIANS, MeridianId } from "@/lib/meridians";
+import { MERIDIANS, MeridianId } from "../lib/meridians";
+
 
 export default function MeridianPanel({
   pickedStroke,
