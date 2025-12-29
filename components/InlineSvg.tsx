@@ -12,6 +12,12 @@ type Props = {
 const STROKE_SELECTOR =
   "path[stroke], polyline[stroke], line[stroke], circle[stroke], rect[stroke], ellipse[stroke]";
 
+// 关键：在插入 DOM 之前，直接从 SVG 字符串里移除所有 <text>...</text>，避免“闪”
+function stripSvgTextLabels(svg: string) {
+  // 删除 <text ...>...</text>（跨行）
+  return svg.replace(/<text\b[\s\S]*?<\/text>/gi, "");
+}
+
 export default function InlineSvg({
   src,
   activeStroke,
@@ -19,23 +25,14 @@ export default function InlineSvg({
   onStrokesDetected,
 }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
-  const viewportRef = useRef<HTMLDivElement | null>(null);
-
   const [svgText, setSvgText] = useState<string>("");
-  const [scale, setScale] = useState<number>(1);
-  const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
-  const [drag, setDrag] = useState<{ on: boolean; x: number; y: number }>({
-    on: false,
-    x: 0,
-    y: 0,
-  });
 
-  // Load SVG
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const res = await fetch(src);
-      const text = await res.text();
+      let text = await res.text();
+      text = stripSvgTextLabels(text);
       if (!cancelled) setSvgText(text);
     })();
     return () => {
@@ -43,7 +40,7 @@ export default function InlineSvg({
     };
   }, [src]);
 
-  // After SVG injected: hide original labels (Korean/whatever), detect strokes, apply highlight
+  // 应用高亮/变淡 + 统计颜色
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -51,13 +48,9 @@ export default function InlineSvg({
     const svg = host.querySelector("svg");
     if (!svg) return;
 
-    // Hide all text labels inside the SVG (so Korean labels disappear)
-    svg.querySelectorAll("text").forEach((t) => {
-      (t as SVGTextElement).style.display = "none";
-    });
-
-    // Detect unique strokes
     const nodes = Array.from(svg.querySelectorAll<SVGElement>(STROKE_SELECTOR));
+
+    // 统计 unique strokes
     const strokes = Array.from(
       new Set(
         nodes
@@ -67,7 +60,7 @@ export default function InlineSvg({
     ).sort();
     onStrokesDetected?.(strokes);
 
-    // Apply highlight / dim others
+    // 高亮逻辑
     nodes.forEach((el) => {
       const stroke = (el.getAttribute("stroke") || "").trim();
       if (!activeStroke) {
@@ -81,14 +74,13 @@ export default function InlineSvg({
         el.style.strokeWidth = "4";
         el.style.filter = "drop-shadow(0 0 2px rgba(0,0,0,0.35))";
       } else {
-        el.style.opacity = "0.12";
+        el.style.opacity = "0.10";
         el.style.strokeWidth = "";
         el.style.filter = "none";
       }
     });
   }, [activeStroke, svgText, onStrokesDetected]);
 
-  // Click to pick stroke
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const target = e.target as Element | null;
     if (!target) return;
@@ -102,76 +94,20 @@ export default function InlineSvg({
     onPick?.({ stroke });
   };
 
-  // Pan/zoom (simple + stable)
-  const onMouseDown = (e: React.MouseEvent) => {
-    if (e.button !== 0) return;
-    setDrag({ on: true, x: e.clientX, y: e.clientY });
-  };
-  const onMouseMove = (e: React.MouseEvent) => {
-    if (!drag.on) return;
-    const dx = e.clientX - drag.x;
-    const dy = e.clientY - drag.y;
-    setDrag({ on: true, x: e.clientX, y: e.clientY });
-    setPan((p) => ({ x: p.x + dx, y: p.y + dy }));
-  };
-  const onMouseUp = () => setDrag((d) => ({ ...d, on: false }));
-
-  const zoomIn = () => setScale((s) => Math.min(3, +(s + 0.15).toFixed(2)));
-  const zoomOut = () => setScale((s) => Math.max(0.6, +(s - 0.15).toFixed(2)));
-  const zoomReset = () => {
-    setScale(1);
-    setPan({ x: 0, y: 0 });
-  };
-
   return (
     <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 10 }}>
-      <div
-        style={{
-          display: "flex",
-          gap: 8,
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: 8,
-        }}
-      >
-        <div style={{ fontSize: 12, opacity: 0.75 }}>
-          鼠标拖拽移动；点线条高亮；缩放查看细节
-        </div>
-        <div style={{ display: "flex", gap: 6 }}>
-          <button onClick={zoomOut}>－</button>
-          <button onClick={zoomIn}>＋</button>
-          <button onClick={zoomReset}>重置</button>
-        </div>
+      <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 8 }}>
+        点线条高亮；如果你刚选了某条经络，点图上的对应线条会自动绑定。
       </div>
 
       <div
-        ref={viewportRef}
-        style={{
-          overflow: "hidden",
-          borderRadius: 10,
-          border: "1px solid #eee",
-          cursor: drag.on ? "grabbing" : "grab",
-          userSelect: "none",
-        }}
-        onMouseDown={onMouseDown}
-        onMouseMove={onMouseMove}
-        onMouseUp={onMouseUp}
-        onMouseLeave={onMouseUp}
-      >
-        <div
-          style={{
-            transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`,
-            transformOrigin: "center center",
-          }}
-        >
-          <div
-            ref={hostRef}
-            onClick={handleClick}
-            dangerouslySetInnerHTML={{ __html: svgText }}
-          />
-        </div>
-      </div>
+        ref={hostRef}
+        onClick={handleClick}
+        dangerouslySetInnerHTML={{ __html: svgText }}
+        style={{ borderRadius: 10, border: "1px solid #eee", overflow: "hidden" }}
+      />
     </div>
   );
 }
+
 
