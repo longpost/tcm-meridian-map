@@ -1,8 +1,9 @@
 "use client";
 
 import React, { useState } from "react";
-import InlineSvg from "@/components/InlineSvg";
-import MeridianPanel from "@/components/MeridianPanel";
+import InlineSvg from "../components/InlineSvg";
+import MeridianPanel from "../components/MeridianPanel";
+
 
 type Mode = "twelve" | "extra";
 
