@@ -25,6 +25,7 @@ function fillTransparent(fill: string) {
   const f = norm(fill);
   return f === "none" || f === "transparent" || f === "rgba(0,0,0,0)";
 }
+// 灰/黑一般是人体轮廓，不当经络
 function isGrayishStroke(stroke: string) {
   const s = norm(stroke);
   if (s === "black" || s === "#000" || s === "#000000") return true;
@@ -33,9 +34,11 @@ function isGrayishStroke(stroke: string) {
   const r = +m[1], g = +m[2], b = +m[3];
   const maxv = Math.max(r, g, b);
   const minv = Math.min(r, g, b);
-  return (maxv - minv) < 18;
+  return maxv - minv < 18;
 }
+
 function stripSvgText(svg: string) {
+  // 删掉原 SVG 的文字（韩文/旧标注）
   return svg.replace(/<text\b[\s\S]*?<\/text>/gi, "");
 }
 
@@ -55,7 +58,6 @@ function ensureGlowStyleOnce() {
   document.head.appendChild(style);
 }
 
-// 判断“经络线候选”
 function looksMeridian(el: SVGElement) {
   const cs = window.getComputedStyle(el);
   const stroke = norm(cs.stroke || "");
@@ -68,18 +70,22 @@ function looksMeridian(el: SVGElement) {
   return true;
 }
 
-// 关键：找最小祖先 g，使其内部“经络颜色”只有 1 种（避免一堆经络/穴位点串在一起）
+// 找一个“更紧”的祖先 g：内部经络线只有 1 种颜色，避免串组
 function findTightMeridianGroup(svg: SVGSVGElement, el: Element): SVGGElement | null {
   let cur: Element | null = el;
   while (cur && cur.tagName.toLowerCase() !== "svg") {
     if (cur.tagName.toLowerCase() === "g") {
       const g = cur as SVGGElement;
-      const paths = Array.from(g.querySelectorAll<SVGElement>("path,polyline,line")).filter((x) =>
-        looksMeridian(x as SVGElement)
+      const segs = Array.from(g.querySelectorAll<SVGElement>("path,polyline,line")).filter((x) =>
+        looksMeridian(x)
       );
-      if (paths.length > 0) {
-        const strokes = new Set(paths.map((p) => (p as any).dataset.stroke || norm(window.getComputedStyle(p).stroke)));
-        // distinct strokes
+      if (segs.length) {
+        const strokes = new Set(
+          segs.map((p) => {
+            const ds = (p as any).dataset?.stroke;
+            return ds ? ds : norm(window.getComputedStyle(p).stroke);
+          })
+        );
         if (strokes.size === 1) return g;
       }
     }
@@ -111,6 +117,7 @@ export default function InlineSvg({ src, activePick, labels, onPick }: Props) {
     onPickRef.current = onPick;
   }, [onPick]);
 
+  // load svg
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -124,7 +131,7 @@ export default function InlineSvg({ src, activePick, labels, onPick }: Props) {
     };
   }, [src]);
 
-  // inject svg DOM
+  // inject DOM (不会闪回)
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -137,14 +144,13 @@ export default function InlineSvg({ src, activePick, labels, onPick }: Props) {
     const svg = host.querySelector("svg") as SVGSVGElement | null;
     if (!svg) return;
 
-    // overlay should be last child => always on top
+    // overlay 放最后，保证在最上层
     let overlay = svg.querySelector("#__acupoint_labels__") as SVGGElement | null;
     if (!overlay) {
       overlay = document.createElementNS("http://www.w3.org/2000/svg", "g");
       overlay.setAttribute("id", "__acupoint_labels__");
       svg.appendChild(overlay);
     } else {
-      // move to end to ensure top layer
       svg.appendChild(overlay);
     }
     overlay.innerHTML = "";
@@ -163,36 +169,32 @@ export default function InlineSvg({ src, activePick, labels, onPick }: Props) {
 }
 `;
 
-    // tag elements + pointer-events
+    // tag + pointer-events: 只让经络线可点；穴位点/人体全部不可点
     const nodes = Array.from(svg.querySelectorAll<SVGElement>(SHAPE_SELECTOR));
     nodes.forEach((el) => {
       const tag = el.tagName.toLowerCase();
 
-      // default: NOT clickable => body not selectable
+      // 默认全部不可点 => 人体永远点不到
       (el.style as any).pointerEvents = "none";
       el.dataset.kind = "body";
 
-      if (tag === "image") {
-        el.dataset.kind = "body";
-        return;
-      }
+      if (tag === "image") return;
 
       const cs = window.getComputedStyle(el);
-      const stroke = norm(cs.stroke || "");
-      el.dataset.stroke = stroke;
+      el.dataset.stroke = norm(cs.stroke || "");
       el.dataset.origSw = cs.strokeWidth || "";
 
-      // Find tight groupKey (prevents cross-meridian dot glow)
+      // tighter groupKey（防串）
       const g = findTightMeridianGroup(svg, el) || (el.closest("g") as SVGGElement | null);
       el.dataset.groupKey = g ? (g.getAttribute("id") ? `g:${g.getAttribute("id")}` : domPathKey(g)) : domPathKey(el);
 
-      // ✅ circles (acupoint dots) are NOT clickable now (you asked to cancel)
+      // 穴位点：不可点（你要取消）
       if (tag === "circle") {
         el.dataset.kind = "dot";
-        (el.style as any).pointerEvents = "none";
         return;
       }
 
+      // 经络线：可点
       if (looksMeridian(el)) {
         el.dataset.kind = "meridian";
         (el.style as any).pointerEvents = "stroke";
@@ -258,16 +260,15 @@ export default function InlineSvg({ src, activePick, labels, onPick }: Props) {
       const kind = el.dataset.kind;
       if (kind !== "meridian" && kind !== "dot") return;
 
-      const sameGroup = (el.dataset.groupKey || "") === groupKey;
-
+      // ✅ 穴位点全部隐藏（避免“亮一堆点”烦你）
       if (kind === "dot") {
-        // only show dots in selected group, others hidden
-        el.style.opacity = sameGroup ? "0.18" : "0";
+        el.style.opacity = "0";
         return;
       }
 
-      // meridian
+      const sameGroup = (el.dataset.groupKey || "") === groupKey;
       const ok = sameGroup && (el.dataset.stroke || "") === stroke;
+
       if (ok) {
         el.style.opacity = "1";
         const orig = parseFloat(el.dataset.origSw || "0");
@@ -281,7 +282,7 @@ export default function InlineSvg({ src, activePick, labels, onPick }: Props) {
       }
     });
 
-    // labels on rep path (CTM corrected)
+    // labels: only when labels exist
     if (!overlay) return;
     if (!labels || labels.length === 0) return;
 
@@ -289,17 +290,20 @@ export default function InlineSvg({ src, activePick, labels, onPick }: Props) {
     if (!rep) return;
 
     let total = 0;
-    try {
-      total = rep.getTotalLength();
-    } catch {
-      return;
-    }
+    try { total = rep.getTotalLength(); } catch { return; }
     if (!isFinite(total) || total <= 10) return;
 
     const ctm = rep.getCTM();
     if (!ctm) return;
 
-    const show = labels.slice(0, 10); // fewer, less clutter
+    // ✅ 字体按“像素”折算成 svg 单位，避免巨型字
+    const vb = svg.viewBox?.baseVal;
+    const rect = svg.getBoundingClientRect();
+    const scale = vb && rect.width ? (vb.width / rect.width) : 1; // svg单位/像素
+    const fontSize = 11 * scale; // ~11px
+    const strokeW = 3 * scale;
+
+    const show = labels.slice(0, 10);
     const start = total * 0.12;
     const end = total * 0.88;
 
@@ -310,11 +314,7 @@ export default function InlineSvg({ src, activePick, labels, onPick }: Props) {
       const len = start + (end - start) * t;
 
       let local: DOMPoint | null = null;
-      try {
-        local = rep.getPointAtLength(len);
-      } catch {
-        local = null;
-      }
+      try { local = rep.getPointAtLength(len); } catch { local = null; }
       if (!local) return;
 
       sp.x = local.x;
@@ -324,14 +324,11 @@ export default function InlineSvg({ src, activePick, labels, onPick }: Props) {
       const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
       text.setAttribute("x", String(global.x));
       text.setAttribute("y", String(global.y));
-      text.setAttribute("font-size", "12"); // smaller
-      text.setAttribute(
-        "font-family",
-        "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto"
-      );
+      text.setAttribute("font-size", String(fontSize));
+      text.setAttribute("font-family", "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto");
       text.setAttribute("paint-order", "stroke fill");
       text.setAttribute("stroke", "white");
-      text.setAttribute("stroke-width", "3");
+      text.setAttribute("stroke-width", String(strokeW));
       text.setAttribute("stroke-linejoin", "round");
       text.setAttribute("fill", "black");
       text.textContent = `${p.code} ${p.zh}`;
@@ -339,7 +336,7 @@ export default function InlineSvg({ src, activePick, labels, onPick }: Props) {
     });
   }, [ready, activePick, labels]);
 
-  // click: only meridian lines are clickable; body and dots ignored
+  // click: only meridian lines
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const svg = getSvg();
     if (!svg) return;
@@ -363,7 +360,7 @@ export default function InlineSvg({ src, activePick, labels, onPick }: Props) {
   return (
     <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 10 }}>
       <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 8 }}>
-        已修：点左图会同步右侧（配合 page.tsx）；穴位点不可点击；不串组；穴位名更小且在最上层。
+        点线会触发右侧联动（page.tsx）；穴位点不显示不参与点击；穴位名字号按屏幕固定，不会巨大。
       </div>
       <div
         ref={hostRef}
@@ -373,4 +370,5 @@ export default function InlineSvg({ src, activePick, labels, onPick }: Props) {
     </div>
   );
 }
+
 
