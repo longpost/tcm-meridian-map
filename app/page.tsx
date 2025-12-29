@@ -7,13 +7,12 @@ import { MERIDIANS, type MeridianId } from "../lib/meridians";
 import { ACUPOINTS } from "../lib/acupoints";
 
 type Mode = "twelve" | "extra";
-const STORAGE_KEY = "tcm_meridian_binding_v1";
+const STORAGE_KEY = "tcm_meridian_binding_v2";
 
 function loadMap(): Record<string, MeridianId> {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return {};
-    return JSON.parse(raw);
+    return raw ? JSON.parse(raw) : {};
   } catch {
     return {};
   }
@@ -23,7 +22,6 @@ function saveMap(map: Record<string, MeridianId>) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
   } catch {}
 }
-
 function pickKey(p: ActivePick) {
   return `${p.stroke}|${p.groupKey}`;
 }
@@ -42,9 +40,7 @@ export default function Page() {
   const [binding, setBinding] = useState<Record<string, MeridianId>>({});
   const [q, setQ] = useState("");
 
-  useEffect(() => {
-    setBinding(loadMap());
-  }, []);
+  useEffect(() => setBinding(loadMap()), []);
 
   const src =
     mode === "twelve"
@@ -100,7 +96,7 @@ export default function Page() {
         <div>
           <div style={{ fontSize: 22, fontWeight: 950 }}>经络互动图（科普）</div>
           <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
-            现在需要“绑定一次”让按钮知道哪条线是 LU/ST 等。绑定后不闪、稳定高亮、图上出穴位名。
+            修复关联：点左图会同步右侧按钮与说明；穴位点不可点击；穴位名会显示在图上（最多 10 个）。
           </div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
@@ -120,20 +116,19 @@ export default function Page() {
           labels={activePick ? labels : []}
           onPick={(p) => {
             setActivePick(p);
+            const k = pickKey(p);
 
-            const key = pickKey(p);
-
-            // bind mode: save mapping
+            // 绑定模式：把这条线绑定到当前经络
             if (bindMode) {
-              const next = { ...binding, [key]: selectedMeridian };
+              const next = { ...binding, [k]: selectedMeridian };
               setBinding(next);
               saveMap(next);
               setBindMode(false);
               return;
             }
 
-            // normal click: if mapped -> sync button
-            const mid = binding[key];
+            // ✅ 关联：点左图后，若已绑定，自动切换右侧按钮与说明
+            const mid = binding[k];
             if (mid) setSelectedMeridian(mid);
           }}
         />
@@ -150,13 +145,13 @@ export default function Page() {
                     key={id}
                     onClick={() => {
                       setSelectedMeridian(id);
-
                       const bound = findBoundPick(id);
+
                       if (bound) {
                         setActivePick(bound);
                         setBindMode(false);
                       } else {
-                        // no mapping yet -> enter bind mode
+                        // 没绑定过这条经络，就提示绑定一次（否则按钮无法“凭空知道”是哪条线）
                         setActivePick(null);
                         setBindMode(true);
                       }
@@ -177,9 +172,9 @@ export default function Page() {
 
             <div style={{ marginTop: 10, fontSize: 12, opacity: 0.85 }}>
               {bindMode ? (
-                <>⚠️ 绑定模式：请在左图上点一下 <b>{selectedMeridian}</b> 的经络线（点到就会高亮 + 保存）。</>
+                <>⚠️ 绑定模式：请在左图上点一下 <b>{selectedMeridian}</b> 的经络线（绑定后按钮才能一键高亮）。</>
               ) : (
-                <>提示：点图上经络线可高亮；如果已绑定，会自动同步右侧按钮。</>
+                <>提示：点左图经络线会同步右侧按钮/说明（前提：该线已绑定）。</>
               )}
             </div>
 
@@ -239,7 +234,7 @@ export default function Page() {
           </div>
 
           <div style={{ fontSize: 12, opacity: 0.7 }}>
-            图上穴位名只在“已高亮经络”时显示（最多 12 个），避免糊图。
+            注意：如果某条经络从未绑定过，点左图它当然不会知道该切到哪个按钮（绑定一次就行）。
           </div>
         </div>
       </div>
