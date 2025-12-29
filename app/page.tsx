@@ -1,42 +1,49 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import InlineSvg, { type ActivePick, type MeridianAutoIndex } from "../components/InlineSvg";
+import InlineSvg, { type ActivePick } from "../components/InlineSvg";
 import MeridianPanel from "../components/MeridianPanel";
 import { MERIDIANS, type MeridianId } from "../lib/meridians";
 import { ACUPOINTS } from "../lib/acupoints";
 
 type Mode = "twelve" | "extra";
+const STORAGE_KEY = "tcm_meridian_binding_v1";
 
-// optional: keep your manual binding as fallback
-const STORAGE_KEY = "tcm_meridian_pick_map_v3";
 function loadMap(): Record<string, MeridianId> {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return {};
     return JSON.parse(raw);
-  } catch { return {}; }
+  } catch {
+    return {};
+  }
 }
 function saveMap(map: Record<string, MeridianId>) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(map)); } catch {}
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
+  } catch {}
 }
-function makeKey(p: ActivePick) {
+
+function pickKey(p: ActivePick) {
   return `${p.stroke}|${p.groupKey}`;
+}
+function parsePickKey(k: string): ActivePick | null {
+  const i = k.indexOf("|");
+  if (i <= 0) return null;
+  return { stroke: k.slice(0, i), groupKey: k.slice(i + 1) };
 }
 
 export default function Page() {
   const [mode, setMode] = useState<Mode>("twelve");
-  const [activePick, setActivePick] = useState<ActivePick | null>(null);
   const [selectedMeridian, setSelectedMeridian] = useState<MeridianId>("LU");
+  const [activePick, setActivePick] = useState<ActivePick | null>(null);
 
-  const [autoIndex, setAutoIndex] = useState<MeridianAutoIndex>({});
   const [bindMode, setBindMode] = useState(false);
-
-  const [pickToMeridian, setPickToMeridian] = useState<Record<string, MeridianId>>({});
+  const [binding, setBinding] = useState<Record<string, MeridianId>>({});
   const [q, setQ] = useState("");
 
   useEffect(() => {
-    setPickToMeridian(loadMap());
+    setBinding(loadMap());
   }, []);
 
   const src =
@@ -44,7 +51,7 @@ export default function Page() {
       ? "/assets/12meridians12shichen.svg"
       : "/assets/12meridians8extra_CVGV.svg";
 
-  const ALL_BUTTONS: MeridianId[] = [
+  const ALL: MeridianId[] = [
     "LU","LI","ST","SP","HT","SI","BL","KI","PC","SJ","GB","LR","REN","DU"
   ];
 
@@ -58,6 +65,18 @@ export default function Page() {
     [selectedMeridian]
   );
 
+  const labels = useMemo(() => {
+    const pts = ACUPOINTS[selectedMeridian] ?? [];
+    return pts.map((p) => ({ code: p.code, zh: p.zh }));
+  }, [selectedMeridian]);
+
+  const findBoundPick = (mid: MeridianId): ActivePick | null => {
+    for (const [k, v] of Object.entries(binding)) {
+      if (v === mid) return parsePickKey(k);
+    }
+    return null;
+  };
+
   const filteredMeridians = useMemo(() => {
     const t = q.trim().toLowerCase();
     if (!t) return MERIDIANS;
@@ -68,37 +87,11 @@ export default function Page() {
     );
   }, [q]);
 
-  // Labels must follow "selectedMeridian", BUT we only render them when activePick exists.
-  // (So you won't see wrong labels when nothing is highlighted.)
-  const labels = useMemo(() => {
-    const pts = ACUPOINTS[selectedMeridian] ?? [];
-    return pts.map((p) => ({ code: p.code, zh: p.zh }));
-  }, [selectedMeridian]);
-
-  const clearAllBindings = () => {
-    setPickToMeridian({});
+  const clearBindings = () => {
+    setBinding({});
     saveMap({});
     setActivePick(null);
     setBindMode(false);
-  };
-
-  // Try to infer meridian from a pick:
-  // 1) if manual binding exists -> use it
-  // 2) else if matches autoIndex -> pick the closest meridian
-  const inferMeridianFromPick = (p: ActivePick): MeridianId | null => {
-    const k = makeKey(p);
-    const bound = pickToMeridian[k];
-    if (bound) return bound;
-
-    // match by groupKey first (best), then stroke
-    const entries = Object.entries(autoIndex) as [MeridianId, ActivePick][];
-    const byGroup = entries.find(([mid, ap]) => ap.groupKey === p.groupKey);
-    if (byGroup) return byGroup[0];
-
-    const byStroke = entries.find(([mid, ap]) => ap.stroke === p.stroke);
-    if (byStroke) return byStroke[0];
-
-    return null;
   };
 
   return (
@@ -107,14 +100,14 @@ export default function Page() {
         <div>
           <div style={{ fontSize: 22, fontWeight: 950 }}>经络互动图（科普）</div>
           <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
-            现在按钮会自动定位 ST/LU/LI…；点线会同步按钮；穴位点不会串组；穴位名会画到线上。
+            现在需要“绑定一次”让按钮知道哪条线是 LU/ST 等。绑定后不闪、稳定高亮、图上出穴位名。
           </div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <button onClick={() => { setActivePick(null); setBindMode(false); }}>
             清除高亮
           </button>
-          <button onClick={clearAllBindings}>
+          <button onClick={clearBindings}>
             清空绑定
           </button>
         </div>
@@ -125,33 +118,32 @@ export default function Page() {
           src={src}
           activePick={activePick}
           labels={activePick ? labels : []}
-          onAutoIndex={(idx) => setAutoIndex(idx)}
           onPick={(p) => {
             setActivePick(p);
 
-            // binding mode: bind this pick to current meridian
+            const key = pickKey(p);
+
+            // bind mode: save mapping
             if (bindMode) {
-              const k = makeKey(p);
-              const next = { ...pickToMeridian, [k]: selectedMeridian };
-              setPickToMeridian(next);
+              const next = { ...binding, [key]: selectedMeridian };
+              setBinding(next);
               saveMap(next);
               setBindMode(false);
               return;
             }
 
-            // normal click: infer meridian and sync button selection
-            const mid = inferMeridianFromPick(p);
+            // normal click: if mapped -> sync button
+            const mid = binding[key];
             if (mid) setSelectedMeridian(mid);
           }}
         />
 
         <div style={{ display: "grid", gap: 12 }}>
-          {/* Buttons */}
           <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 12 }}>
-            <div style={{ fontWeight: 900 }}>经络（分开按钮）</div>
+            <div style={{ fontWeight: 900 }}>经络按钮</div>
 
             <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 8 }}>
-              {ALL_BUTTONS.map((id) => {
+              {ALL.map((id) => {
                 const active = id === selectedMeridian;
                 return (
                   <button
@@ -159,17 +151,15 @@ export default function Page() {
                     onClick={() => {
                       setSelectedMeridian(id);
 
-                      // First try autoIndex (NO need to bind)
-                      const ap = autoIndex[id];
-                      if (ap) {
-                        setActivePick(ap);
+                      const bound = findBoundPick(id);
+                      if (bound) {
+                        setActivePick(bound);
                         setBindMode(false);
-                        return;
+                      } else {
+                        // no mapping yet -> enter bind mode
+                        setActivePick(null);
+                        setBindMode(true);
                       }
-
-                      // fallback: ask user to bind
-                      setActivePick(null);
-                      setBindMode(true);
                     }}
                     style={{
                       padding: "6px 10px",
@@ -186,30 +176,27 @@ export default function Page() {
             </div>
 
             <div style={{ marginTop: 10, fontSize: 12, opacity: 0.85 }}>
-              {autoIndex[selectedMeridian] ? (
-                <>✅ 已自动定位：点按钮直接高亮该经络。</>
-              ) : bindMode ? (
-                <>⚠️ 这条经络在 SVG 里没被自动识别到：请在左图上点一下对应经络线做一次绑定。</>
+              {bindMode ? (
+                <>⚠️ 绑定模式：请在左图上点一下 <b>{selectedMeridian}</b> 的经络线（点到就会高亮 + 保存）。</>
               ) : (
-                <>提示：点线会同步按钮；若某条没法自动识别，就用一次绑定兜底。</>
+                <>提示：点图上经络线可高亮；如果已绑定，会自动同步右侧按钮。</>
               )}
             </div>
 
             <div style={{ marginTop: 8, fontSize: 12 }}>
-              当前选中经络：<b>{selectedMeridian}</b>{" "}
+              当前选中：<b>{selectedMeridian}</b>{" "}
               {selectedInfo ? <span style={{ opacity: 0.7 }}>· {selectedInfo.zh}</span> : null}
             </div>
           </div>
 
           <MeridianPanel pickedStroke={activePick?.stroke} selectedMeridian={selectedMeridian} />
 
-          {/* Search list */}
           <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 12 }}>
-            <div style={{ fontWeight: 900 }}>经络列表（可搜索）</div>
+            <div style={{ fontWeight: 900 }}>经络列表（搜索）</div>
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="搜：肺经 / 任脉 / GB ..."
+              placeholder="搜：肺经 / 胃经 / 任脉..."
               style={{
                 marginTop: 8,
                 width: "100%",
@@ -224,9 +211,9 @@ export default function Page() {
                   key={m.id}
                   onClick={() => {
                     setSelectedMeridian(m.id);
-                    const ap = autoIndex[m.id];
-                    if (ap) {
-                      setActivePick(ap);
+                    const bound = findBoundPick(m.id);
+                    if (bound) {
+                      setActivePick(bound);
                       setBindMode(false);
                     } else {
                       setActivePick(null);
@@ -243,8 +230,7 @@ export default function Page() {
                   }}
                 >
                   <div style={{ fontWeight: 800 }}>
-                    {m.id} · {m.zh}{" "}
-                    <span style={{ opacity: 0.7, fontWeight: 500 }}>({m.en})</span>
+                    {m.id} · {m.zh} <span style={{ opacity: 0.7, fontWeight: 500 }}>({m.en})</span>
                   </div>
                   <div style={{ marginTop: 4, fontSize: 13, opacity: 0.85 }}>{m.blurb}</div>
                 </button>
@@ -253,7 +239,7 @@ export default function Page() {
           </div>
 
           <div style={{ fontSize: 12, opacity: 0.7 }}>
-            说明：图上穴位名最多显示 12 个（防糊图）。要全显示或 hover 才显示，我再改。
+            图上穴位名只在“已高亮经络”时显示（最多 12 个），避免糊图。
           </div>
         </div>
       </div>
