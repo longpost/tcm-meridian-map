@@ -1,8 +1,12 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
-export type ActivePick = { stroke: string; groupKey: string };
+export type ActivePick = {
+  stroke: string;   // normalized
+  groupKey: string; // TOP-LEVEL group key (stable, prevents cross-meridian bleed)
+};
+
 type AcupointLabel = { code: string; zh: string };
 
 type Props = {
@@ -12,23 +16,10 @@ type Props = {
   onPick?: (p: ActivePick) => void;
 };
 
-const SHAPE = "path, polyline, line, circle, rect, ellipse";
+const SHAPE_SELECTOR = "path, polyline, line, circle, rect, ellipse, image";
 
 function norm(s: string) {
   return (s || "").trim().toLowerCase().replace(/\s+/g, "");
-}
-
-function domPathKey(el: Element): string {
-  const parts: string[] = [];
-  let cur: Element | null = el;
-  while (cur && cur.tagName.toLowerCase() !== "svg") {
-    const parent = cur.parentElement;
-    if (!parent) break;
-    const idx = Array.from(parent.children).indexOf(cur);
-    parts.push(`${cur.tagName.toLowerCase()}:${idx}`);
-    cur = parent;
-  }
-  return "p:" + parts.reverse().join("/");
 }
 
 function hasStroke(stroke: string) {
@@ -36,23 +27,62 @@ function hasStroke(stroke: string) {
   return s && s !== "none" && s !== "rgba(0,0,0,0)";
 }
 
-function transparentFill(fill: string) {
+function fillTransparent(fill: string) {
   const f = norm(fill);
   return f === "none" || f === "transparent" || f === "rgba(0,0,0,0)";
 }
 
-// 排除接近黑色（人体轮廓常见）
-function isNearBlack(stroke: string) {
+// 判定灰/黑：人体轮廓通常是灰黑色线（防止被当成经络线）
+function isGrayishStroke(stroke: string) {
   const s = norm(stroke);
   if (s === "black" || s === "#000" || s === "#000000") return true;
   const m = s.match(/^rgb\((\d+),(\d+),(\d+)\)$/);
   if (!m) return false;
   const r = +m[1], g = +m[2], b = +m[3];
-  return r < 35 && g < 35 && b < 35;
+  const maxv = Math.max(r, g, b);
+  const minv = Math.min(r, g, b);
+  // 颜色差很小 => 灰度
+  return (maxv - minv) < 18;
 }
 
-function ensureStylesOnce() {
-  const id = "__tcm_inline_svg_styles__";
+// 找到 layer1 下的“顶层 g”，用它做 groupKey，避免点右边经络跑到左边穴位点
+function topGroupKey(el: Element): string {
+  let cur: Element | null = el;
+  let lastG: Element | null = null;
+
+  while (cur) {
+    if (cur.tagName.toLowerCase() === "g") lastG = cur;
+    if ((cur as any).getAttribute?.("id") === "layer1") break;
+    cur = cur.parentElement;
+  }
+
+  // lastG 可能就是 layer1 下面第一层的 g
+  if (lastG && (lastG as any).getAttribute) {
+    // 用 id 优先，没有就用 DOM 路径
+    const id = (lastG as any).getAttribute("id");
+    if (id) return `g:${id}`;
+  }
+
+  // fallback: DOM path
+  const parts: string[] = [];
+  cur = el;
+  while (cur && cur.tagName.toLowerCase() !== "svg") {
+    const p = cur.parentElement;
+    if (!p) break;
+    const idx = Array.from(p.children).indexOf(cur);
+    parts.push(`${cur.tagName.toLowerCase()}:${idx}`);
+    cur = p;
+  }
+  return "p:" + parts.reverse().join("/");
+}
+
+function stripSvgText(svg: string) {
+  // 你不要韩文/旧标签，我直接删掉原始 <text>
+  return svg.replace(/<text\b[\s\S]*?<\/text>/gi, "");
+}
+
+function ensureGlowStyleOnce() {
+  const id = "__tcm_glow_style__";
   if (document.getElementById(id)) return;
   const style = document.createElement("style");
   style.id = id;
@@ -67,22 +97,17 @@ function ensureStylesOnce() {
   document.head.appendChild(style);
 }
 
-function stripSvgText(svg: string) {
-  return svg.replace(/<text\b[\s\S]*?<\/text>/gi, "");
-}
-
 export default function InlineSvg({ src, activePick, labels, onPick }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
-  const [svgRaw, setSvgRaw] = useState<string>("");
-  const [mounted, setMounted] = useState(false);
+  const [svgRaw, setSvgRaw] = useState("");
+  const [ready, setReady] = useState(false);
 
-  // keep callback stable without re-triggering effects
   const onPickRef = useRef<Props["onPick"]>(onPick);
   useEffect(() => {
     onPickRef.current = onPick;
   }, [onPick]);
 
-  // 1) load svg (string)
+  // 1) load svg
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -91,25 +116,23 @@ export default function InlineSvg({ src, activePick, labels, onPick }: Props) {
       text = stripSvgText(text);
       if (!cancelled) setSvgRaw(text);
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [src]);
 
-  // 2) inject DOM ONLY when svgRaw changes (this is what stops the “flash then reset”)
+  // 2) inject svg DOM (only when svgRaw changes) —— 不会“点一下闪一下回原样”
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
 
-    ensureStylesOnce();
+    ensureGlowStyleOnce();
 
     host.innerHTML = svgRaw || "";
-    setMounted(Boolean(svgRaw));
+    setReady(Boolean(svgRaw));
 
     const svg = host.querySelector("svg");
     if (!svg) return;
 
-    // overlay for labels on top
+    // overlay group
     let overlay = svg.querySelector("#__acupoint_labels__") as SVGGElement | null;
     if (!overlay) {
       overlay = document.createElementNS("http://www.w3.org/2000/svg", "g");
@@ -118,7 +141,7 @@ export default function InlineSvg({ src, activePick, labels, onPick }: Props) {
     }
     overlay.innerHTML = "";
 
-    // force our label visible even if SVG has hostile CSS
+    // 强制标签可见
     let styleEl = svg.querySelector("#__tcm_internal_style__") as SVGStyleElement | null;
     if (!styleEl) {
       styleEl = document.createElementNS("http://www.w3.org/2000/svg", "style");
@@ -134,56 +157,54 @@ export default function InlineSvg({ src, activePick, labels, onPick }: Props) {
 }
 `;
 
-    // mark clickability + dataset
-    const nodes = Array.from(svg.querySelectorAll<SVGElement>(SHAPE));
+    // Tag + make ONLY meridian lines + circles clickable
+    const nodes = Array.from(svg.querySelectorAll<SVGElement>(SHAPE_SELECTOR));
 
     nodes.forEach((el) => {
+      const tag = el.tagName.toLowerCase();
+
+      // 默认都不可点：彻底解决“还能选中人体”
+      (el.style as any).pointerEvents = "none";
+
+      // image(人体底图) 永远不可点
+      if (tag === "image") {
+        el.dataset.kind = "body";
+        return;
+      }
+
       const cs = window.getComputedStyle(el);
       const stroke = norm(cs.stroke || "");
       const fill = cs.fill || "";
       const sw = parseFloat(cs.strokeWidth || "0");
-      const group = el.closest("g") ?? el;
 
       el.dataset.stroke = stroke;
-      el.dataset.groupKey = domPathKey(group);
+      el.dataset.groupKey = topGroupKey(el);
       el.dataset.origSw = cs.strokeWidth || "";
 
-      // default: NOT clickable (so body/outline can't be selected)
-      (el.style as any).pointerEvents = "none";
-      el.dataset.isMeridian = "0";
-      el.dataset.isDot = "0";
+      // 穴位点：circle 可点
+      if (tag === "circle") {
+        el.dataset.kind = "dot";
+        (el.style as any).pointerEvents = "all";
+        return;
+      }
 
-      // meridian candidate: colored stroke + transparent fill + not near black + reasonable stroke width
+      // 经络线候选：必须有 stroke、fill 透明、非灰黑、线宽合理
       const isMeridian =
-        el.tagName.toLowerCase() !== "circle" &&
         hasStroke(stroke) &&
-        transparentFill(fill) &&
-        !isNearBlack(stroke) &&
+        fillTransparent(fill) &&
+        !isGrayishStroke(stroke) &&
         isFinite(sw) &&
         sw > 0 &&
         sw <= 4;
 
       if (isMeridian) {
-        el.dataset.isMeridian = "1";
+        el.dataset.kind = "meridian";
         (el.style as any).pointerEvents = "stroke";
+      } else {
+        el.dataset.kind = "body";
       }
-
-      // allow dots clickable (but we will map dot->line in click handler)
-      if (el.tagName.toLowerCase() === "circle") {
-        el.dataset.isDot = "1";
-        (el.style as any).pointerEvents = "all";
-      }
-
-      // reset visuals
-      el.classList.remove("tcm-glow");
-      el.style.opacity = "";
-      el.style.strokeWidth = "";
-      el.style.filter = "";
     });
   }, [svgRaw]);
-
-  const activeStroke = useMemo(() => (activePick ? norm(activePick.stroke) : null), [activePick]);
-  const activeGroup = useMemo(() => (activePick ? activePick.groupKey : null), [activePick]);
 
   function getSvg() {
     const host = hostRef.current;
@@ -191,38 +212,41 @@ export default function InlineSvg({ src, activePick, labels, onPick }: Props) {
     return host.querySelector("svg") as SVGSVGElement | null;
   }
 
-  function pickLongestPathInGroup(svg: SVGSVGElement, groupKey: string) {
-    const paths = Array.from(svg.querySelectorAll<SVGPathElement>("path")).filter(
-      (p) => p.dataset.isMeridian === "1" && (p.dataset.groupKey || "") === groupKey
-    );
+  function pickRepresentativePath(svg: SVGSVGElement, groupKey: string, stroke: string) {
+    // 同一个 groupKey 里找“最长的 path”作为代表线（避免你点到点/短线导致不显示）
+    const paths = Array.from(svg.querySelectorAll<SVGPathElement>("path")).filter((p) => {
+      return (
+        p.dataset.kind === "meridian" &&
+        (p.dataset.groupKey || "") === groupKey &&
+        (p.dataset.stroke || "") === stroke
+      );
+    });
+
     let best: SVGPathElement | null = null;
     let bestLen = -1;
     for (const p of paths) {
       try {
         const len = p.getTotalLength();
-        if (len > bestLen) {
-          bestLen = len;
-          best = p;
-        }
+        if (len > bestLen) { bestLen = len; best = p; }
       } catch {}
     }
     return best;
   }
 
-  // 3) apply highlight WITHOUT re-initializing anything (no flash)
+  // 3) highlight + labels (THIS fixes “穴位名一直不显示”：坐标系转 CTM)
   useEffect(() => {
-    if (!mounted) return;
+    if (!ready) return;
     const svg = getSvg();
     if (!svg) return;
 
-    const nodes = Array.from(svg.querySelectorAll<SVGElement>(SHAPE));
+    const nodes = Array.from(svg.querySelectorAll<SVGElement>(SHAPE_SELECTOR));
     const overlay = svg.querySelector("#__acupoint_labels__") as SVGGElement | null;
     if (overlay) overlay.innerHTML = "";
 
-    // no active -> restore only meridian/dots (leave body untouched)
-    if (!activePick || !activeStroke || !activeGroup) {
+    // reset (only for meridian+dot; body untouched)
+    if (!activePick) {
       nodes.forEach((el) => {
-        if (el.dataset.isMeridian === "1" || el.dataset.isDot === "1") {
+        if (el.dataset.kind === "meridian" || el.dataset.kind === "dot") {
           el.style.opacity = "";
           el.style.strokeWidth = "";
           el.classList.remove("tcm-glow");
@@ -232,77 +256,75 @@ export default function InlineSvg({ src, activePick, labels, onPick }: Props) {
       return;
     }
 
-    // highlight only same group + same stroke meridian lines
-    const matchedMeridians = nodes.filter(
-      (el) =>
-        el.dataset.isMeridian === "1" &&
-        (el.dataset.groupKey || "") === activeGroup &&
-        (el.dataset.stroke || "") === activeStroke
-    );
+    const groupKey = activePick.groupKey;
+    const stroke = norm(activePick.stroke);
 
+    // 高亮规则：只高亮同 groupKey 同 stroke 的 meridian；点只保留同组，其他组直接隐藏（不串）
     nodes.forEach((el) => {
-      const isMeridian = el.dataset.isMeridian === "1";
-      const isDot = el.dataset.isDot === "1";
+      const kind = el.dataset.kind;
 
-      if (!isMeridian && !isDot) return; // body/outline untouched
+      if (kind !== "meridian" && kind !== "dot") return;
 
-      const sameGroup = (el.dataset.groupKey || "") === activeGroup;
+      const sameGroup = (el.dataset.groupKey || "") === groupKey;
 
-      if (isMeridian) {
-        const ok =
-          sameGroup && (el.dataset.stroke || "") === activeStroke && matchedMeridians.length > 0;
-        if (ok) {
-          el.style.opacity = "1";
-          const orig = parseFloat(el.dataset.origSw || "0");
-          if (isFinite(orig) && orig > 0) el.style.strokeWidth = String(orig + 1);
-          el.classList.add("tcm-glow");
-        } else {
-          el.style.opacity = "0.08";
-          el.style.strokeWidth = "";
-          el.classList.remove("tcm-glow");
-          el.style.filter = "";
-        }
+      if (kind === "dot") {
+        el.style.opacity = sameGroup ? "0.25" : "0";
+        return;
       }
 
-      // dots: hide other groups completely to stop “左边点也出来”
-      if (isDot) {
-        el.style.opacity = sameGroup ? "0.25" : "0";
+      // meridian
+      const sameStroke = (el.dataset.stroke || "") === stroke;
+      const ok = sameGroup && sameStroke;
+
+      if (ok) {
+        el.style.opacity = "1";
+        const orig = parseFloat(el.dataset.origSw || "0");
+        if (isFinite(orig) && orig > 0) el.style.strokeWidth = String(orig + 1);
+        el.classList.add("tcm-glow");
+      } else {
+        el.style.opacity = "0.08";
+        el.style.strokeWidth = "";
+        el.classList.remove("tcm-glow");
+        el.style.filter = "";
       }
     });
 
-    // draw labels along the longest path in active group
+    // draw labels along representative path (with CTM transform)
     if (!overlay) return;
     if (!labels || labels.length === 0) return;
 
-    const rep = pickLongestPathInGroup(svg, activeGroup);
+    const rep = pickRepresentativePath(svg, groupKey, stroke);
     if (!rep) return;
 
     let total = 0;
-    try {
-      total = rep.getTotalLength();
-    } catch {
-      return;
-    }
+    try { total = rep.getTotalLength(); } catch { return; }
     if (!isFinite(total) || total <= 10) return;
+
+    const ctm = rep.getCTM();
+    if (!ctm) return;
 
     const show = labels.slice(0, 12);
     const start = total * 0.1;
     const end = total * 0.9;
 
+    const svgPoint = svg.createSVGPoint();
+
     show.forEach((p, idx) => {
       const t = show.length === 1 ? 0.5 : idx / (show.length - 1);
       const len = start + (end - start) * t;
-      let pt: DOMPoint | null = null;
-      try {
-        pt = rep.getPointAtLength(len);
-      } catch {
-        pt = null;
-      }
-      if (!pt) return;
+
+      let local: DOMPoint | null = null;
+      try { local = rep.getPointAtLength(len); } catch { local = null; }
+      if (!local) return;
+
+      // ✅ 关键：把路径局部坐标变换到 SVG 全局坐标
+      svgPoint.x = local.x;
+      svgPoint.y = local.y;
+      const global = svgPoint.matrixTransform(ctm);
 
       const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
-      text.setAttribute("x", String(pt.x));
-      text.setAttribute("y", String(pt.y));
+      text.setAttribute("x", String(global.x));
+      text.setAttribute("y", String(global.y));
       text.setAttribute("font-size", "16");
       text.setAttribute("font-family", "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto");
       text.setAttribute("paint-order", "stroke fill");
@@ -313,9 +335,9 @@ export default function InlineSvg({ src, activePick, labels, onPick }: Props) {
       text.textContent = `${p.code} ${p.zh}`;
       overlay.appendChild(text);
     });
-  }, [mounted, activePick, activeStroke, activeGroup, labels]);
+  }, [ready, activePick, labels]);
 
-  // click -> meridian line OR dot maps to meridian line in same group
+  // click handler: ignore body; dot maps to nearest meridian in same top group+stroke
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const svg = getSvg();
     if (!svg) return;
@@ -323,24 +345,31 @@ export default function InlineSvg({ src, activePick, labels, onPick }: Props) {
     const target = e.target as Element | null;
     if (!target) return;
 
-    const hit = target.closest(SHAPE) as SVGElement | null;
+    const hit = target.closest(SHAPE_SELECTOR) as SVGElement | null;
     if (!hit) return;
 
-    // body shouldn't be clickable now, but just in case:
-    if (hit.dataset.isMeridian !== "1" && hit.dataset.isDot !== "1") return;
+    const kind = hit.dataset.kind;
 
-    const groupKey = hit.dataset.groupKey || domPathKey(hit.closest("g") ?? hit);
+    // ✅ 彻底禁止人体被选中
+    if (kind !== "meridian" && kind !== "dot") return;
 
-    let picked: SVGElement | null = null;
+    const groupKey = hit.dataset.groupKey || topGroupKey(hit);
 
-    if (hit.dataset.isMeridian === "1") {
-      picked = hit;
-    } else if (hit.tagName.toLowerCase() === "circle") {
-      picked = pickLongestPathInGroup(svg, groupKey);
+    if (kind === "meridian") {
+      const stroke = hit.dataset.stroke || norm(window.getComputedStyle(hit).stroke);
+      if (!hasStroke(stroke)) return;
+      onPickRef.current?.({ stroke: norm(stroke), groupKey });
+      return;
     }
 
-    if (!picked) return;
-    const stroke = picked.dataset.stroke || norm(window.getComputedStyle(picked).stroke);
+    // dot -> map to same groupKey, same stroke representative path
+    const dotStroke = hit.dataset.stroke || norm(window.getComputedStyle(hit).stroke);
+    if (!hasStroke(dotStroke)) return;
+
+    const rep = pickRepresentativePath(svg, groupKey, norm(dotStroke));
+    if (!rep) return;
+
+    const stroke = rep.dataset.stroke || norm(window.getComputedStyle(rep).stroke);
     if (!hasStroke(stroke)) return;
 
     onPickRef.current?.({ stroke: norm(stroke), groupKey });
@@ -349,7 +378,7 @@ export default function InlineSvg({ src, activePick, labels, onPick }: Props) {
   return (
     <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 10 }}>
       <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 8 }}>
-        修复：不闪；点不到人体；穴位点不串；穴位名会画在图上（最多 12 个）。
+        已修：点不到人体；不串穴位点；选中后图上会显示穴位名（坐标系已纠正）。
       </div>
       <div
         ref={hostRef}
