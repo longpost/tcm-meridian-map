@@ -9,7 +9,7 @@ import { ACUPOINTS } from "../lib/acupoints";
 type Mode = "twelve" | "extra";
 const STORAGE_KEY = "tcm_meridian_pick_map_v2";
 
-// mapping key = `${stroke}|${groupKey}` -> MeridianId
+// key = `${stroke}|${groupKey}` -> MeridianId
 function loadMap(): Record<string, MeridianId> {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -27,6 +27,12 @@ function saveMap(map: Record<string, MeridianId>) {
 
 function makeKey(p: ActivePick) {
   return `${p.stroke}|${p.groupKey}`;
+}
+
+function keyToPick(k: string): ActivePick | null {
+  const i = k.indexOf("|");
+  if (i <= 0) return null;
+  return { stroke: k.slice(0, i), groupKey: k.slice(i + 1) };
 }
 
 export default function Page() {
@@ -70,10 +76,19 @@ export default function Page() {
     );
   }, [q]);
 
+  // Points for overlay labels
   const labels = useMemo(() => {
     const pts = ACUPOINTS[selectedMeridian] ?? [];
     return pts.map((p) => ({ code: p.code, zh: p.zh }));
   }, [selectedMeridian]);
+
+  // Find an existing bound pick for a meridian (first match)
+  const findBoundPickForMeridian = (mid: MeridianId): ActivePick | null => {
+    for (const [k, v] of Object.entries(pickToMeridian)) {
+      if (v === mid) return keyToPick(k);
+    }
+    return null;
+  };
 
   const clearAllBindings = () => {
     setPickToMeridian({});
@@ -88,7 +103,7 @@ export default function Page() {
         <div>
           <div style={{ fontSize: 22, fontWeight: 950 }}>经络互动图（科普）</div>
           <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
-            现在是“分组高亮 + 流动发光”。点线可同步选中 LU/LI 等。
+            规则：按钮优先尝试“已绑定自动高亮”；未绑定则进入绑定模式点线一次完成绑定。
           </div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
@@ -105,14 +120,14 @@ export default function Page() {
         <InlineSvg
           src={src}
           activePick={activePick}
+          // 只有在“真的有高亮线”时才在图上显示穴位名
           labels={activePick ? labels : []}
           onPick={(p) => {
-            // 普通点线：先高亮
             setActivePick(p);
 
             const key = makeKey(p);
 
-            // 如果处于绑定模式：把这条线绑定到当前经络
+            // 绑定模式：把这条线绑定到当前经络
             if (bindMode) {
               const next = { ...pickToMeridian, [key]: selectedMeridian };
               setPickToMeridian(next);
@@ -121,14 +136,13 @@ export default function Page() {
               return;
             }
 
-            // 非绑定模式：若这条线已经绑定过，自动切换选中经络（你要的“旁边 LU/LI 跟着选中”）
+            // 非绑定模式：若这条线已绑定过，自动切换右侧经络选中
             const mid = pickToMeridian[key];
             if (mid) setSelectedMeridian(mid);
           }}
         />
 
         <div style={{ display: "grid", gap: 12 }}>
-          {/* Buttons */}
           <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 12 }}>
             <div style={{ fontWeight: 900 }}>经络（分开按钮）</div>
 
@@ -140,9 +154,17 @@ export default function Page() {
                     key={id}
                     onClick={() => {
                       setSelectedMeridian(id);
-                      // 没有“自动知道哪条线”，所以未绑定就进绑定模式
-                      setActivePick(null);
-                      setBindMode(true);
+
+                      // 如果已经有绑定，直接高亮那条线（这样穴位名也会出现）
+                      const bound = findBoundPickForMeridian(id);
+                      if (bound) {
+                        setActivePick(bound);
+                        setBindMode(false);
+                      } else {
+                        // 没绑定 -> 进入绑定模式
+                        setActivePick(null);
+                        setBindMode(true);
+                      }
                     }}
                     style={{
                       padding: "6px 10px",
@@ -162,27 +184,23 @@ export default function Page() {
               {bindMode ? (
                 <>⚠️ 绑定模式：请在左图上点一下 <b>{selectedMeridian}</b> 的经络线（点到就会高亮 + 保存绑定）。</>
               ) : (
-                <>提示：点线条会高亮；若之前绑定过，会自动切换右侧 LU/LI 等选中状态。</>
+                <>提示：点线条会高亮；如果那条线曾绑定过，会自动同步选中 LU/LI 等。</>
               )}
             </div>
 
             <div style={{ marginTop: 8, fontSize: 12 }}>
               当前选中经络：<b>{selectedMeridian}</b>{" "}
               {selectedInfo ? (
-                <span style={{ opacity: 0.7 }}>
-                  · {selectedInfo.zh}
-                </span>
+                <span style={{ opacity: 0.7 }}>· {selectedInfo.zh}</span>
               ) : null}
             </div>
           </div>
 
-          {/* Panel */}
           <MeridianPanel
             pickedStroke={activePick?.stroke}
             selectedMeridian={selectedMeridian}
           />
 
-          {/* Search list */}
           <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 12 }}>
             <div style={{ fontWeight: 900 }}>经络列表（可搜索）</div>
             <input
@@ -203,8 +221,14 @@ export default function Page() {
                   key={m.id}
                   onClick={() => {
                     setSelectedMeridian(m.id);
-                    setActivePick(null);
-                    setBindMode(true);
+                    const bound = findBoundPickForMeridian(m.id);
+                    if (bound) {
+                      setActivePick(bound);
+                      setBindMode(false);
+                    } else {
+                      setActivePick(null);
+                      setBindMode(true);
+                    }
                   }}
                   style={{
                     textAlign: "left",
@@ -226,12 +250,12 @@ export default function Page() {
           </div>
 
           <div style={{ fontSize: 12, opacity: 0.7 }}>
-            备注：线上穴位名目前是“沿选中经络线均匀排布”（先把交互跑顺、效果跑出来）。
-            如果你要精确到人体位置，就得换/做带穴位坐标的数据层。
+            线上穴位名目前最多显示 12 个，防止太挤；你要“全显示/鼠标悬停显示/只显示编号”，我再按你喜好改。
           </div>
         </div>
       </div>
     </main>
   );
 }
+
 
