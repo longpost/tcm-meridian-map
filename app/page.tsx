@@ -7,7 +7,7 @@ import { MERIDIANS, type MeridianId } from "../lib/meridians";
 import { ACUPOINTS } from "../lib/acupoints";
 
 type Mode = "twelve" | "extra";
-const STORAGE_KEY = "tcm_meridian_binding_v2";
+const STORAGE_KEY = "tcm_meridian_binding_v3";
 
 function loadMap(): Record<string, MeridianId> {
   try {
@@ -36,7 +36,6 @@ export default function Page() {
   const [selectedMeridian, setSelectedMeridian] = useState<MeridianId>("LU");
   const [activePick, setActivePick] = useState<ActivePick | null>(null);
 
-  const [bindMode, setBindMode] = useState(false);
   const [binding, setBinding] = useState<Record<string, MeridianId>>({});
   const [q, setQ] = useState("");
 
@@ -48,7 +47,7 @@ export default function Page() {
       : "/assets/12meridians8extra_CVGV.svg";
 
   const ALL: MeridianId[] = [
-    "LU","LI","ST","SP","HT","SI","BL","KI","PC","SJ","GB","LR","REN","DU"
+    "LU", "LI", "ST", "SP", "HT", "SI", "BL", "KI", "PC", "SJ", "GB", "LR", "REN", "DU",
   ];
 
   useEffect(() => {
@@ -76,10 +75,11 @@ export default function Page() {
   const filteredMeridians = useMemo(() => {
     const t = q.trim().toLowerCase();
     if (!t) return MERIDIANS;
-    return MERIDIANS.filter((m) =>
-      m.id.toLowerCase().includes(t) ||
-      m.zh.toLowerCase().includes(t) ||
-      m.en.toLowerCase().includes(t)
+    return MERIDIANS.filter(
+      (m) =>
+        m.id.toLowerCase().includes(t) ||
+        m.zh.toLowerCase().includes(t) ||
+        m.en.toLowerCase().includes(t)
     );
   }, [q]);
 
@@ -87,7 +87,6 @@ export default function Page() {
     setBinding({});
     saveMap({});
     setActivePick(null);
-    setBindMode(false);
   };
 
   return (
@@ -96,16 +95,12 @@ export default function Page() {
         <div>
           <div style={{ fontSize: 22, fontWeight: 950 }}>经络互动图（科普）</div>
           <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
-            修复关联：点左图会同步右侧按钮与说明；穴位点不可点击；穴位名会显示在图上（最多 10 个）。
+            用法：先点右侧按钮（比如 GB），再去左图点 GB 那条线一次，就完成绑定。以后点线会自动切按钮/说明。
           </div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={() => { setActivePick(null); setBindMode(false); }}>
-            清除高亮
-          </button>
-          <button onClick={clearBindings}>
-            清空绑定
-          </button>
+          <button onClick={() => setActivePick(null)}>清除高亮</button>
+          <button onClick={clearBindings}>清空绑定</button>
         </div>
       </div>
 
@@ -118,18 +113,18 @@ export default function Page() {
             setActivePick(p);
             const k = pickKey(p);
 
-            // 绑定模式：把这条线绑定到当前经络
-            if (bindMode) {
-              const next = { ...binding, [k]: selectedMeridian };
-              setBinding(next);
-              saveMap(next);
-              setBindMode(false);
+            // ✅ 已绑定：点左图直接切右侧按钮与说明
+            const mid = binding[k];
+            if (mid) {
+              setSelectedMeridian(mid);
               return;
             }
 
-            // ✅ 关联：点左图后，若已绑定，自动切换右侧按钮与说明
-            const mid = binding[k];
-            if (mid) setSelectedMeridian(mid);
+            // ✅ 未绑定：自动把这条线绑定到“当前选中的按钮经络”
+            const next = { ...binding, [k]: selectedMeridian };
+            setBinding(next);
+            saveMap(next);
+            // 绑定后右侧本来就是 selectedMeridian，不需要再改
           }}
         />
 
@@ -140,29 +135,27 @@ export default function Page() {
             <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 8 }}>
               {ALL.map((id) => {
                 const active = id === selectedMeridian;
+                const hasBind = Boolean(findBoundPick(id));
                 return (
                   <button
                     key={id}
                     onClick={() => {
                       setSelectedMeridian(id);
-                      const bound = findBoundPick(id);
 
-                      if (bound) {
-                        setActivePick(bound);
-                        setBindMode(false);
-                      } else {
-                        // 没绑定过这条经络，就提示绑定一次（否则按钮无法“凭空知道”是哪条线）
-                        setActivePick(null);
-                        setBindMode(true);
-                      }
+                      // 如果已有绑定，按钮一按就高亮对应那条线
+                      const bound = findBoundPick(id);
+                      if (bound) setActivePick(bound);
+                      else setActivePick(null);
                     }}
                     style={{
                       padding: "6px 10px",
                       borderRadius: 999,
                       border: "1px solid #ddd",
                       background: active ? "#f2f2f2" : "white",
-                      cursor: "pointer"
+                      cursor: "pointer",
+                      opacity: hasBind ? 1 : 0.75,
                     }}
+                    title={hasBind ? "已绑定" : "未绑定：点按钮后去左图点对应经络线一次"}
                   >
                     {id}
                   </button>
@@ -171,16 +164,13 @@ export default function Page() {
             </div>
 
             <div style={{ marginTop: 10, fontSize: 12, opacity: 0.85 }}>
-              {bindMode ? (
-                <>⚠️ 绑定模式：请在左图上点一下 <b>{selectedMeridian}</b> 的经络线（绑定后按钮才能一键高亮）。</>
-              ) : (
-                <>提示：点左图经络线会同步右侧按钮/说明（前提：该线已绑定）。</>
-              )}
-            </div>
-
-            <div style={{ marginTop: 8, fontSize: 12 }}>
-              当前选中：<b>{selectedMeridian}</b>{" "}
+              当前：<b>{selectedMeridian}</b>{" "}
               {selectedInfo ? <span style={{ opacity: 0.7 }}>· {selectedInfo.zh}</span> : null}
+              <div style={{ marginTop: 6 }}>
+                {findBoundPick(selectedMeridian)
+                  ? "✅ 已绑定：按钮可直接高亮该经络；点左图也会联动。"
+                  : "⚠️ 未绑定：请在左图点该经络线一次完成绑定。"}
+              </div>
             </div>
           </div>
 
@@ -207,13 +197,8 @@ export default function Page() {
                   onClick={() => {
                     setSelectedMeridian(m.id);
                     const bound = findBoundPick(m.id);
-                    if (bound) {
-                      setActivePick(bound);
-                      setBindMode(false);
-                    } else {
-                      setActivePick(null);
-                      setBindMode(true);
-                    }
+                    if (bound) setActivePick(bound);
+                    else setActivePick(null);
                   }}
                   style={{
                     textAlign: "left",
@@ -221,11 +206,12 @@ export default function Page() {
                     borderRadius: 10,
                     border: "1px solid #eee",
                     background: m.id === selectedMeridian ? "#f2f2f2" : "white",
-                    cursor: "pointer"
+                    cursor: "pointer",
                   }}
                 >
                   <div style={{ fontWeight: 800 }}>
-                    {m.id} · {m.zh} <span style={{ opacity: 0.7, fontWeight: 500 }}>({m.en})</span>
+                    {m.id} · {m.zh}{" "}
+                    <span style={{ opacity: 0.7, fontWeight: 500 }}>({m.en})</span>
                   </div>
                   <div style={{ marginTop: 4, fontSize: 13, opacity: 0.85 }}>{m.blurb}</div>
                 </button>
@@ -234,12 +220,13 @@ export default function Page() {
           </div>
 
           <div style={{ fontSize: 12, opacity: 0.7 }}>
-            注意：如果某条经络从未绑定过，点左图它当然不会知道该切到哪个按钮（绑定一次就行）。
+            你现在只看到 LU / ST 的穴位名，多半是 ACUPOINTS 里只填了 LU/ST。其他经络没数据就不会显示文字。
           </div>
         </div>
       </div>
     </main>
   );
 }
+
 
 
