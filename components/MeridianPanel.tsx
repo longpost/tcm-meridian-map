@@ -2,22 +2,9 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import InlineSvg, { type ActivePick } from "./InlineSvg";
-import { MERIDIANS, MeridianId } from "../lib/meridians";
+import { MERIDIANS, type MeridianId } from "../lib/meridians";
 
-/**
- * 目标：
- * - 不让最终用户做“绑定/校准”
- * - 点击按钮 LU/LI/ST… -> 高亮对应经络（靠 SVG 标题自动推断）
- * - 点击图上的经络线 -> 反推是哪条经 -> 同步右侧按钮与说明
- * - 禁止点到人体轮廓/穴位点/文字导致乱闪
- * - 穴位文字：这张 SVG 自带的大量编号文字默认隐藏，只在选中经络时显示“靠近该经络线”的部分，并强制缩小字号
- *
- * 现实约束（你必须接受的事实）：
- * - 这张 SVG 并没有把每条经络线直接标成 LU/LI…，所以只能用“标题位置 + 附近线段”做自动归类（启发式）
- * - 这能把交互做稳定，但不能保证 100% 医学标准一致（要完美只能做标注版 SVG）
- */
-
-// SVG 里的经络标题（这张 Commons 文件里有）
+// SVG 里的经络标题（你这张 Commons 文件里有）
 const TITLES: Array<{ id: MeridianId; title: string }> = [
   { id: "LU", title: "수태음폐경" },
   { id: "LI", title: "수양명대장경" },
@@ -60,7 +47,7 @@ function injectCssOnce() {
 .tcm-point-text { display: none !important; }
 .tcm-point-text.tcm-show { display: inline !important; }
 
-/* 强制小字号，避免你说的巨大字 */
+/* 强制小字号，避免巨大字 */
 .tcm-point-text { font-size: 3.2px !important; }
 `;
   document.head.appendChild(style);
@@ -146,7 +133,7 @@ function autoTagMeridians(svg: SVGSVGElement, candidates: SVGPathElement[]) {
       })
       .sort((a, b) => a.d - b.d);
 
-    // 前 N 个作为“这条经”的线段集合（基本够用）
+    // 前 N 个作为“这条经”的线段集合
     const selected = ranked.slice(0, 26).map((x) => x.p);
     for (const p of selected) p.setAttribute("data-meridian", id);
   }
@@ -161,7 +148,6 @@ function applySelection(svg: SVGSVGElement, id: MeridianId | null) {
   });
   paths.forEach((p) => p.classList.add("tcm-dim"));
 
-  // 清穴位文字显示
   const pointTexts = Array.from(svg.querySelectorAll<SVGTextElement>("text.tcm-point-text"));
   pointTexts.forEach((t) => t.classList.remove("tcm-show"));
 
@@ -185,14 +171,18 @@ function applySelection(svg: SVGSVGElement, id: MeridianId | null) {
   }
 }
 
+function isMeridianId(x: string): x is MeridianId {
+  return (MERIDIANS as any[]).some((m) => m.id === x);
+}
+
 /** 从 SVG 点击反查是哪条经 */
 function getMeridianFromClickedPath(path: SVGPathElement): MeridianId | null {
   const m = path.getAttribute("data-meridian");
   if (!m) return null;
-  return (MERIDIANS as any[]).some((x) => x.id === m) ? (m as MeridianId) : null;
+  return isMeridianId(m) ? (m as MeridianId) : null;
 }
 
-export default function MeridianPanel({ svgPath }: Props) {
+export default function MeridianPanel({ svgPath }: { svgPath: string }) {
   const [selected, setSelected] = useState<MeridianId | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
 
@@ -209,7 +199,7 @@ export default function MeridianPanel({ svgPath }: Props) {
       const svg = hostRef.current?.querySelector("svg") as SVGSVGElement | null;
       if (!svg) return false;
 
-      // 关键：把 SVG 内所有元素禁点，避免点到人体/文字/穴位点
+      // 禁止 SVG 内所有元素点击，避免点到人体/文字/点
       svg.querySelectorAll<SVGElement>("*").forEach((n) => {
         (n as any).style.pointerEvents = "none";
       });
@@ -217,13 +207,12 @@ export default function MeridianPanel({ svgPath }: Props) {
       const candidates = pickMeridianCandidates(svg);
       candidates.forEach((p) => {
         p.classList.add("tcm-meridian-path");
-        (p as any).style.pointerEvents = "stroke"; // 只点线
+        (p as any).style.pointerEvents = "stroke";
       });
 
       tagPointTexts(svg);
       autoTagMeridians(svg, candidates);
 
-      // 点击经络线联动
       const onClick = (evt: MouseEvent) => {
         const target = evt.target as Element | null;
         const path = target?.closest("path.tcm-meridian-path") as SVGPathElement | null;
@@ -235,7 +224,6 @@ export default function MeridianPanel({ svgPath }: Props) {
       };
       svg.addEventListener("click", onClick);
 
-      // 初始应用
       applySelection(svg, selected);
 
       cleanup = () => {
@@ -263,12 +251,9 @@ export default function MeridianPanel({ svgPath }: Props) {
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 16 }}>
-      <div
-        ref={hostRef}
-        style={{ border: "1px solid #e5e5e5", borderRadius: 14, padding: 12, background: "#fff" }}
-      >
-        {/* ✅ 你项目的 InlineSvg 要求 activePick + labels，这里给默认值 */}
-        <InlineSvg src={svgPath} activePick={null as any as ActivePick | null} labels={[]} />
+      <div ref={hostRef} style={{ border: "1px solid #e5e5e5", borderRadius: 14, padding: 12, background: "#fff" }}>
+        {/* 你的 InlineSvg 要求 activePick + labels，这里给默认值 */}
+        <InlineSvg src={svgPath} activePick={null as ActivePick | null} labels={[]} />
       </div>
 
       <div style={{ border: "1px solid #e5e5e5", borderRadius: 14, padding: 12, background: "#fff" }}>
@@ -313,7 +298,7 @@ export default function MeridianPanel({ svgPath }: Props) {
               <div style={{ marginTop: 6, fontSize: 13, opacity: 0.9 }}>{current.blurb}</div>
               <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>
                 说明：这张 SVG 自带的穴位文字多为编号+韩文，我已默认隐藏，只在选中经络时显示靠近该经络的那部分，并强制缩小字号。
-                将来要“点某个穴位弹出标准中文/英文名”，需要做一份你自己的穴位数据表（code/zh/en）并把 SVG 点位标注成 data-point。
+                将来要“点某个穴位弹出标准中文/英文名”，需要你自己的穴位数据表（code/zh/en）并把 SVG 点位标注成 data-point（我可以给你标注版 SVG）。
               </div>
             </>
           ) : (
