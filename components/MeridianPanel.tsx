@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
-import InlineSvg from "./InlineSvg";
+import InlineSvg, { type SvgMeta } from "./InlineSvg";
 import { MERIDIAN_MAP, type TwelveId, type ExtraId, type MapShape } from "../lib/meridianMap";
 
 type Mode = "twelve" | "extra";
@@ -11,10 +11,6 @@ const EXTRA: ExtraId[] = ["REN","DU","CHONG","DAI","YINWEI","YANGWEI","YINQIAO",
 
 function isTwelveMode(svgPath: string): boolean {
   return svgPath.includes("12meridians12shichen");
-}
-
-function prettyId(id: string) {
-  return id;
 }
 
 function reverseLookup(map: Record<string, string[]>, segKey: string): string | null {
@@ -28,54 +24,63 @@ function exportJson(obj: MapShape) {
   return JSON.stringify(obj, null, 2);
 }
 
+// ✅ 韩文关键词 → 12经（按图例常见写法）
+const KO_TO_TWELVE: Array<{ id: TwelveId; keys: string[] }> = [
+  { id: "LU", keys: ["폐", "폐경"] },
+  { id: "LI", keys: ["대장", "대장경"] },
+  { id: "ST", keys: ["위", "위경"] },
+  { id: "SP", keys: ["비", "비경"] },
+  { id: "HT", keys: ["심", "심경"] },
+  { id: "SI", keys: ["소장", "소장경"] },
+  { id: "BL", keys: ["방광", "방광경"] },
+  { id: "KI", keys: ["신", "신경"] },
+  { id: "PC", keys: ["심포", "심포경"] },
+  { id: "SJ", keys: ["삼초", "삼초경"] },
+  { id: "GB", keys: ["담", "담경"] },
+  { id: "LR", keys: ["간", "간경"] },
+];
+
 export default function MeridianPanel({ svgPath }: { svgPath: string }) {
   const mode: Mode = isTwelveMode(svgPath) ? "twelve" : "extra";
-
   const [admin, setAdmin] = useState(false);
 
-  // 当前选中的经络（正常模式）
   const [selectedTwelve, setSelectedTwelve] = useState<TwelveId>("LU");
   const [selectedExtra, setSelectedExtra] = useState<ExtraId>("REN");
 
-  // 映射草稿：允许你在页面上临时改，导出 JSON 后再粘回 lib/meridianMap.ts
   const [draftMap, setDraftMap] = useState<MapShape>(MERIDIAN_MAP);
+
+  const [meta, setMeta] = useState<SvgMeta | null>(null);
 
   const currentId = mode === "twelve" ? selectedTwelve : selectedExtra;
 
   const activeSegKeys = useMemo(() => {
-    return mode === "twelve" ? (draftMap.twelve[selectedTwelve] || []) : (draftMap.extra[selectedExtra] || []);
+    return mode === "twelve"
+      ? (draftMap.twelve[selectedTwelve] || [])
+      : (draftMap.extra[selectedExtra] || []);
   }, [draftMap, mode, selectedTwelve, selectedExtra]);
-
-  // 映射模式：当前正在映射哪条经（可以跟正常选中一致）
-  const mappingId = currentId;
 
   const draftSegKeys = useMemo(() => {
     if (!admin) return [];
-    return mode === "twelve" ? (draftMap.twelve[mappingId as TwelveId] || []) : (draftMap.extra[mappingId as ExtraId] || []);
-  }, [admin, draftMap, mode, mappingId]);
+    return activeSegKeys;
+  }, [admin, activeSegKeys]);
 
   const onPickSeg = ({ segKey }: { segKey: string }) => {
     if (admin) {
-      // 映射模式：点一下加入/再点一下移除
       setDraftMap((prev) => {
         const next: MapShape = JSON.parse(JSON.stringify(prev));
         const bucket = mode === "twelve"
-          ? (next.twelve[mappingId as TwelveId] ||= [])
-          : (next.extra[mappingId as ExtraId] ||= []);
-
+          ? (next.twelve[currentId as TwelveId] ||= [])
+          : (next.extra[currentId as ExtraId] ||= []);
         const idx = bucket.indexOf(segKey);
         if (idx >= 0) bucket.splice(idx, 1);
         else bucket.push(segKey);
-
         return next;
       });
       return;
     }
 
-    // 正常模式：点线段反查属于哪个经
     const mapObj = mode === "twelve" ? draftMap.twelve : draftMap.extra;
     const hit = reverseLookup(mapObj as any, segKey);
-
     if (hit) {
       if (mode === "twelve") setSelectedTwelve(hit as TwelveId);
       else setSelectedExtra(hit as ExtraId);
@@ -83,6 +88,48 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
   };
 
   const ids = mode === "twelve" ? TWELVE : EXTRA;
+
+  const doAutoMapTwelve = () => {
+    if (!meta) {
+      alert("SVG 还没加载完（meta为空），等1秒再点。");
+      return;
+    }
+    if (mode !== "twelve") {
+      alert("Auto-map 初稿目前只做 12经（twelve 图）。");
+      return;
+    }
+
+    // 1) 找到每条经的“标签锚点”（图例文字中心）
+    const anchors: Array<{ id: TwelveId; cx: number; cy: number }> = [];
+    for (const rule of KO_TO_TWELVE) {
+      const hit = meta.labels.find((l) => rule.keys.some((k) => l.text.includes(k)));
+      if (hit) anchors.push({ id: rule.id, cx: hit.cx, cy: hit.cy });
+    }
+
+    if (anchors.length < 6) {
+      alert("没找到足够的韩文图例标签（anchors太少）。这张图可能图例文字被删了或不同写法。");
+      return;
+    }
+
+    // 2) 每个线段分配给最近的锚点
+    const next: MapShape = JSON.parse(JSON.stringify(draftMap));
+    // 先清空
+    for (const id of TWELVE) next.twelve[id] = [];
+
+    for (const s of meta.segments) {
+      let best: { id: TwelveId; d2: number } | null = null;
+      for (const a of anchors) {
+        const dx = s.cx - a.cx;
+        const dy = s.cy - a.cy;
+        const d2 = dx * dx + dy * dy;
+        if (!best || d2 < best.d2) best = { id: a.id, d2 };
+      }
+      if (best) next.twelve[best.id].push(s.segKey);
+    }
+
+    setDraftMap(next);
+    alert("已生成 12经 Auto-map 初稿。你现在逐个经络点按钮检查，错误的段手工点掉/补上即可。");
+  };
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 380px", gap: 16 }}>
@@ -92,11 +139,12 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
           activeSegKeys={activeSegKeys}
           draftSegKeys={admin ? draftSegKeys : []}
           onPickSeg={onPickSeg}
+          onMeta={setMeta}
         />
         <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
           {admin
-            ? "【映射模式】点线段：加入/移除当前经络。橙色=你正在映射的段；蓝色=当前高亮。"
-            : "点线段会反选右侧按钮；点按钮会高亮对应经络。人体轮廓不可点。"}
+            ? "【映射模式】点线段：加入/移除当前经络。完成后导出 JSON 固化到 lib/meridianMap.ts。"
+            : "点线段会反选右侧按钮（前提：线段已被映射）。"}
         </div>
       </div>
 
@@ -127,7 +175,28 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
           </button>
         </div>
 
-        <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
+        {admin && mode === "twelve" ? (
+          <div style={{ marginTop: 10 }}>
+            <button
+              onClick={doAutoMapTwelve}
+              style={{
+                cursor: "pointer",
+                padding: "10px 12px",
+                borderRadius: 10,
+                border: "1px solid #ddd",
+                background: "#fafafa",
+                fontWeight: 900,
+              }}
+            >
+              Auto-map 初稿（12经）
+            </button>
+            <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75, lineHeight: 1.6 }}>
+              用图例韩文经络名当锚点，按“线段中心点离哪个锚点最近”自动分配。肯定会有错，但能省掉你从0开始的体力活。
+            </div>
+          </div>
+        ) : null}
+
+        <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: mode === "twelve" ? "repeat(4, 1fr)" : "repeat(2, 1fr)", gap: 8 }}>
           {ids.map((id) => {
             const on = currentId === id;
             return (
@@ -147,7 +216,7 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
                   fontWeight: 900,
                 }}
               >
-                {prettyId(id)}
+                {id}
               </button>
             );
           })}
@@ -155,16 +224,10 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
 
         <div style={{ marginTop: 14, borderTop: "1px dashed #eee", paddingTop: 12 }}>
           <div style={{ fontWeight: 900, marginBottom: 6 }}>当前选中</div>
-          <div>
-            <code>{currentId}</code>
-          </div>
+          <div><code>{currentId}</code></div>
 
           <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75, lineHeight: 1.6 }}>
             线段数：<b>{activeSegKeys.length}</b>
-            <br />
-            {admin
-              ? "映射时：点线段加入/移除；完成后导出 JSON，粘贴回 lib/meridianMap.ts。"
-              : "如果点线段没有反选按钮，说明那段还没被映射到任何经络。"}
           </div>
 
           {admin ? (
@@ -187,7 +250,7 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
                 导出映射（复制到剪贴板）
               </button>
 
-              <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
+              <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
                 把下面 JSON 粘贴覆盖到 <code>lib/meridianMap.ts</code> 的 <code>MERIDIAN_MAP</code>。
               </div>
 
@@ -212,6 +275,4 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
     </div>
   );
 }
-
-
 
