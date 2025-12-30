@@ -10,7 +10,7 @@ export default function Page() {
 
   const svgPath = useMemo(() => {
     return mode === "twelve"
-      ? "/assets/12meridians12shichen_clean.svg"
+      ? "/assets/12meridians12shichen_clickable.svg"
       : "/assets/12meridians8extra_CVGV.svg";
   }, [mode]);
 
