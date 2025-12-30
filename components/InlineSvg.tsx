@@ -4,17 +4,19 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 
 export type PickSeg = { segKey: string };
 
+export type SvgMeta = {
+  segments: Array<{ segKey: string; cx: number; cy: number }>;
+  labels: Array<{ text: string; cx: number; cy: number }>;
+};
+
 type Props = {
   src: string;
-
-  // 需要高亮的线段 keys（某条经络映射到的 segments）
   activeSegKeys: string[];
-
-  // 映射模式下：当前“正在映射”的经络的线段（用于预览）
   draftSegKeys?: string[];
-
-  // 点击线段回调
   onPickSeg?: (pick: PickSeg) => void;
+
+  // ✅ 新增：把线段中心点和文字标签中心点回传
+  onMeta?: (meta: SvgMeta) => void;
 };
 
 const SHAPE_SELECTOR = "path, polyline, line";
@@ -43,8 +45,6 @@ function isGrayOrBlack(stroke: string) {
   const s = norm(stroke);
   if (!s) return true;
   if (s === "black" || s === "#000" || s === "#000000") return true;
-  if (s === "#8c8e91" || s === "#a9b5bf" || s === "#666" || s === "#777" || s === "#888") return true;
-
   const m = s.match(/^rgb\((\d+),(\d+),(\d+)\)$/);
   if (!m) return false;
   const r = +m[1], g = +m[2], b = +m[3];
@@ -66,7 +66,6 @@ function domPathKey(el: Element): string {
   return "p:" + parts.reverse().join("/");
 }
 
-// 经络候选线段：细、无填充、够长、有彩色 stroke
 function looksMeridianSegment(el: SVGElement): boolean {
   const tag = el.tagName.toLowerCase();
   if (tag !== "path" && tag !== "polyline" && tag !== "line") return false;
@@ -85,11 +84,9 @@ function looksMeridianSegment(el: SVGElement): boolean {
     const anyEl = el as any;
     if (typeof anyEl.getTotalLength === "function") {
       const len = anyEl.getTotalLength();
-      if (!isFinite(len) || len < 35) return false; // 线段级，不要太短
+      if (!isFinite(len) || len < 35) return false;
     }
-  } catch {
-    // ignore
-  }
+  } catch {}
 
   return true;
 }
@@ -119,7 +116,7 @@ function ensureStyleOnce() {
   document.head.appendChild(style);
 }
 
-export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg }: Props) {
+export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg, onMeta }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [raw, setRaw] = useState("");
   const [err, setErr] = useState("");
@@ -163,19 +160,43 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg 
     const svg = host.querySelector("svg") as SVGSVGElement | null;
     if (!svg) return;
 
-    // ✅ 默认所有都不可点（包括人体轮廓、文字、点）
+    // 全部不可点
     svg.querySelectorAll<SVGElement>("*").forEach((n) => ((n as any).style.pointerEvents = "none"));
 
-    // ✅ 只挑“彩色细线段”做可点击 segment
+    // 只挑彩色细线段
     const candidates = Array.from(svg.querySelectorAll<SVGElement>(SHAPE_SELECTOR)).filter(looksMeridianSegment);
 
+    const segMeta: SvgMeta["segments"] = [];
     for (const el of candidates) {
       const key = domPathKey(el);
       el.setAttribute("data-segkey", key);
       el.classList.add("m-seg");
       (el as any).style.pointerEvents = "stroke";
       (el as any).style.cursor = "pointer";
+
+      try {
+        const bb = (el as any).getBBox?.();
+        if (bb && isFinite(bb.x) && isFinite(bb.y)) {
+          segMeta.push({ segKey: key, cx: bb.x + bb.width / 2, cy: bb.y + bb.height / 2 });
+        }
+      } catch {}
     }
+
+    // 采集文字标签中心点（用于 auto-map）
+    const labels: SvgMeta["labels"] = [];
+    const texts = Array.from(svg.querySelectorAll<SVGTextElement>("text"));
+    for (const t of texts) {
+      const txt = (t.textContent || "").trim();
+      if (!txt) continue;
+      try {
+        const bb = (t as any).getBBox?.();
+        if (bb && isFinite(bb.x) && isFinite(bb.y)) {
+          labels.push({ text: txt, cx: bb.x + bb.width / 2, cy: bb.y + bb.height / 2 });
+        }
+      } catch {}
+    }
+
+    onMeta?.({ segments: segMeta, labels });
 
     const onClick = (evt: MouseEvent) => {
       const target = evt.target as Element | null;
@@ -187,9 +208,8 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg 
 
     svg.addEventListener("click", onClick);
     return () => svg.removeEventListener("click", onClick);
-  }, [raw, onPickSeg]);
+  }, [raw, onPickSeg, onMeta]);
 
-  // highlight
   useEffect(() => {
     const host = hostRef.current;
     const svg = host?.querySelector("svg") as SVGSVGElement | null;
@@ -204,7 +224,6 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg 
 
     if (activeSet.size === 0 && draftSet.size === 0) return;
 
-    // dim everything first if anything active
     segs.forEach((el) => el.classList.add("seg-dim"));
 
     segs.forEach((el) => {
@@ -232,5 +251,3 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg 
     </div>
   );
 }
-
-
