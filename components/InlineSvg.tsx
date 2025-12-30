@@ -2,59 +2,99 @@
 
 import React, { useEffect, useRef, useState } from "react";
 
-export type ActivePick = {
-  stroke: string;   // normalized
-  groupKey: string; // stable-ish dom path
-};
+export type MeridianLabel = { code: string; name: string };
 
 type TitleHint = { id: string; text: string };
 
 type Props = {
   src: string;
 
-  activePick: ActivePick | null;
-  labels: Array<{ code: string; name: string }>;
+  // 当前选中的经络
+  activeMeridian: string | null;
 
-  titles?: TitleHint[];
+  // 选中经络后，要在图上显示的穴位名（来自你自己的 ACUPOINTS）
+  labels: MeridianLabel[];
 
-  // 点击经络线：回传 pick + “最近标题”推断的经络 id（可能为 null）
-  onPick?: (pick: ActivePick, hintMeridianId: string | null) => void;
+  // SVG 里经络标题（韩文全名）
+  titles: TitleHint[];
 
-  // SVG ready 后，把“标题中心”+“经络候选线”发给上层，用来自动绑定按钮↔经络
-  onReady?: (api: {
-    svg: SVGSVGElement;
-    meridianEls: SVGElement[];
-    titleCenters: Array<{ id: string; x: number; y: number }>;
-    getPickFromEl: (el: SVGElement) => ActivePick;
-    getCenterOfEl: (el: SVGElement) => { x: number; y: number };
-  }) => void;
+  // 点线时回调（已经映射为 LU/LI/...）
+  onPickMeridian?: (id: string | null) => void;
 };
 
-const SHAPE_SELECTOR = "path, polyline, line";
-
+// -------- utils --------
 function norm(s: string) {
   return (s || "").trim().toLowerCase().replace(/\s+/g, "");
 }
-
-// 黑灰色判断：人体轮廓/血管/辅助线经常是黑/灰
 function isGrayOrBlack(stroke: string) {
   const s = norm(stroke);
   if (!s) return true;
   if (s === "black" || s === "#000" || s === "#000000") return true;
-  // 常见灰
   if (s === "#8c8e91" || s === "#a9b5bf" || s === "#666" || s === "#777" || s === "#888") return true;
 
-  // rgb(...) 判灰
   const m = s.match(/^rgb\((\d+),(\d+),(\d+)\)$/);
   if (!m) return false;
   const r = +m[1], g = +m[2], b = +m[3];
   const maxv = Math.max(r, g, b);
   const minv = Math.min(r, g, b);
-  return maxv - minv < 18; // 接近灰
+  return maxv - minv < 18;
+}
+function getStroke(el: SVGElement) {
+  return (
+    (el.getAttribute("stroke") ||
+      (el.getAttribute("style") || "").match(/stroke:\s*([^;]+)/i)?.[1] ||
+      "").trim()
+  );
+}
+function getStrokeWidth(el: SVGElement) {
+  const swRaw =
+    el.getAttribute("stroke-width") ||
+    (el.getAttribute("style") || "").match(/stroke-width:\s*([^;]+)/i)?.[1] ||
+    "";
+  return parseFloat(String(swRaw).replace("px", "")) || 0;
+}
+function centerBBox(el: SVGGraphicsElement) {
+  const b = el.getBBox();
+  return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+}
+function dist2(a: { x: number; y: number }, b: { x: number; y: number }) {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return dx * dx + dy * dy;
+}
+
+// 经络候选线：细、无填充、够长、有 stroke、且 stroke 不是黑灰
+function looksMeridian(el: SVGElement): boolean {
+  const tag = el.tagName.toLowerCase();
+  if (tag !== "path" && tag !== "polyline" && tag !== "line") return false;
+
+  const stroke = getStroke(el);
+  if (!stroke || stroke === "none") return false;
+
+  // ✅ 关键：黑/灰排除 → 人体轮廓点不到
+  if (isGrayOrBlack(stroke)) return false;
+
+  const fill = (el.getAttribute("fill") || "").trim().toLowerCase();
+  if (fill && fill !== "none" && fill !== "transparent") return false;
+
+  const sw = getStrokeWidth(el);
+  if (sw <= 0 || sw > 1.2) return false;
+
+  try {
+    const anyEl = el as any;
+    if (typeof anyEl.getTotalLength === "function") {
+      const len = anyEl.getTotalLength();
+      if (!isFinite(len) || len < 90) return false;
+    }
+  } catch {
+    return false;
+  }
+
+  return true;
 }
 
 function ensureStyleOnce() {
-  const id = "__tcm_inline_svg_style__";
+  const id = "__tcm_inline_svg_style_v2__";
   if (document.getElementById(id)) return;
   const style = document.createElement("style");
   style.id = id;
@@ -73,82 +113,11 @@ function ensureStyleOnce() {
   document.head.appendChild(style);
 }
 
-function centerBBox(el: SVGGraphicsElement) {
-  const b = el.getBBox();
-  return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
-}
-
-function dist2(a: { x: number; y: number }, b: { x: number; y: number }) {
-  const dx = a.x - b.x;
-  const dy = a.y - b.y;
-  return dx * dx + dy * dy;
-}
-
-function domPathKey(el: Element): string {
-  const parts: string[] = [];
-  let cur: Element | null = el;
-  while (cur && cur.tagName.toLowerCase() !== "svg") {
-    const p = cur.parentElement;
-    if (!p) break;
-    const idx = Array.from(p.children).indexOf(cur);
-    parts.push(`${cur.tagName.toLowerCase()}:${idx}`);
-    cur = p;
-  }
-  return "p:" + parts.reverse().join("/");
-}
-
-function getStroke(el: SVGElement) {
-  return (
-    (el.getAttribute("stroke") ||
-      (el.getAttribute("style") || "").match(/stroke:\s*([^;]+)/i)?.[1] ||
-      "").trim()
-  );
-}
-
-function getStrokeWidth(el: SVGElement) {
-  const swRaw =
-    el.getAttribute("stroke-width") ||
-    (el.getAttribute("style") || "").match(/stroke-width:\s*([^;]+)/i)?.[1] ||
-    "";
-  return parseFloat(String(swRaw).replace("px", "")) || 0;
-}
-
-// 经络候选线：细、无填充、够长、有 stroke、且 stroke 不是黑灰
-function looksMeridian(el: SVGElement): boolean {
-  const tag = el.tagName.toLowerCase();
-  if (tag !== "path" && tag !== "polyline" && tag !== "line") return false;
-
-  const stroke = getStroke(el);
-  if (!stroke || stroke === "none") return false;
-
-  // ✅ 关键：黑/灰的一律排除 —— 这就是“人体轮廓不能点”的核心
-  if (isGrayOrBlack(stroke)) return false;
-
-  const fill = (el.getAttribute("fill") || "").trim().toLowerCase();
-  if (fill && fill !== "none" && fill !== "transparent") return false;
-
-  const sw = getStrokeWidth(el);
-  if (sw <= 0 || sw > 1.2) return false;
-
-  try {
-    const anyEl = el as any;
-    if (typeof anyEl.getTotalLength === "function") {
-      const len = anyEl.getTotalLength();
-      if (!isFinite(len) || len < 120) return false;
-    }
-  } catch {
-    return false;
-  }
-
-  return true;
-}
-
-export default function InlineSvg({ src, activePick, labels, titles, onPick, onReady }: Props) {
+export default function InlineSvg({ src, activeMeridian, labels, titles, onPickMeridian }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [svgRaw, setSvgRaw] = useState("");
 
-  const titleCentersRef = useRef<Array<{ id: string; x: number; y: number }>>([]);
-
+  // load svg
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -161,6 +130,7 @@ export default function InlineSvg({ src, activePick, labels, titles, onPick, onR
     };
   }, [src]);
 
+  // mount + build data-meridian mapping
   useEffect(() => {
     ensureStyleOnce();
 
@@ -171,7 +141,7 @@ export default function InlineSvg({ src, activePick, labels, titles, onPick, onR
     const svg = host.querySelector("svg") as SVGSVGElement | null;
     if (!svg) return;
 
-    // overlay
+    // overlay group (for Chinese labels)
     let overlay = svg.querySelector("#__tcm_overlay__") as SVGGElement | null;
     if (!overlay) {
       overlay = document.createElementNS("http://www.w3.org/2000/svg", "g");
@@ -182,47 +152,66 @@ export default function InlineSvg({ src, activePick, labels, titles, onPick, onR
     }
     overlay.innerHTML = "";
 
-    // ✅ 全部禁点，避免人体/文字/点抢点击
+    // 全禁点，避免人体/文字抢点击
     svg.querySelectorAll<SVGElement>("*").forEach((n) => ((n as any).style.pointerEvents = "none"));
 
-    // 标记经络候选线（只有彩色细线）
+    // 找标题坐标（韩文全名）
+    const titleCenters: Array<{ id: string; x: number; y: number }> = [];
+    const textNodes = Array.from(svg.querySelectorAll<SVGTextElement>("text"));
+    for (const t of textNodes) {
+      const s = (t.textContent || "").trim();
+      const hit = titles.find((x) => x.text === s);
+      if (!hit) continue;
+      const c = centerBBox(t as any);
+      titleCenters.push({ id: hit.id, x: c.x, y: c.y });
+    }
+
+    // 找经络候选线（彩色细线）
+    const shapes = Array.from(svg.querySelectorAll<SVGElement>("path,polyline,line"));
     const meridianEls: SVGElement[] = [];
-    const lines = Array.from(svg.querySelectorAll<SVGElement>(SHAPE_SELECTOR));
-    for (const el of lines) {
+    for (const el of shapes) {
       if (!looksMeridian(el)) continue;
       el.classList.add("tcm-meridian");
       (el as any).style.pointerEvents = "stroke";
-      el.setAttribute("data-groupkey", domPathKey(el.closest("g") ?? el));
-      el.setAttribute("data-stroke", norm(getStroke(el)));
       meridianEls.push(el);
     }
 
-    // 标题中心（用于自动推断是哪条经）
-    titleCentersRef.current = [];
-    if (titles && titles.length) {
-      const textNodes = Array.from(svg.querySelectorAll<SVGTextElement>("text"));
-      for (const t of textNodes) {
-        const s = (t.textContent || "").trim();
-        const hit = titles.find((x) => x.text === s);
-        if (!hit) continue;
-        const c = centerBBox(t as any);
-        titleCentersRef.current.push({ id: hit.id, x: c.x, y: c.y });
+    // ✅ 核心：把每一条候选线段归属到“最近的经络标题”
+    // 这样按钮绑定就不会都落在同一条线上
+    if (titleCenters.length) {
+      for (const el of meridianEls) {
+        const c = centerBBox(el as any);
+        let best = Infinity;
+        let bestId: string | null = null;
+        for (const t of titleCenters) {
+          const d = dist2(c, t);
+          if (d < best) {
+            best = d;
+            bestId = t.id;
+          }
+        }
+        // 阈值：太远的不归属（避免误伤别的装饰线）
+        if (bestId && best < 6000) {
+          el.setAttribute("data-meridian", bestId);
+        }
       }
     }
 
-    onReady?.({
-      svg,
-      meridianEls,
-      titleCenters: titleCentersRef.current,
-      getPickFromEl: (el) => ({
-        groupKey: el.getAttribute("data-groupkey") || domPathKey(el.closest("g") ?? el),
-        stroke: el.getAttribute("data-stroke") || norm(getStroke(el)),
-      }),
-      getCenterOfEl: (el) => centerBBox(el as any),
-    });
-  }, [svgRaw, titles, onReady]);
+    // 点击：只对已经归属的线生效
+    const onClick = (evt: MouseEvent) => {
+      const target = evt.target as Element | null;
+      const hit = target?.closest(".tcm-meridian") as SVGElement | null;
+      if (!hit) return;
 
-  // highlight + labels
+      const id = hit.getAttribute("data-meridian");
+      onPickMeridian?.(id || null);
+    };
+    svg.addEventListener("click", onClick);
+
+    return () => svg.removeEventListener("click", onClick);
+  }, [svgRaw, titles, onPickMeridian]);
+
+  // apply highlight + draw labels near the meridian title (simple + readable)
   useEffect(() => {
     const host = hostRef.current;
     const svg = host?.querySelector("svg") as SVGSVGElement | null;
@@ -238,41 +227,27 @@ export default function InlineSvg({ src, activePick, labels, titles, onPick, onR
       el.classList.remove("tcm-dim");
     });
 
-    if (!activePick) return;
+    if (!activeMeridian) return;
 
+    // dim others, active selected
     all.forEach((el) => el.classList.add("tcm-dim"));
-
-    all.forEach((el) => {
-      const gk = el.getAttribute("data-groupkey") || "";
-      const st = el.getAttribute("data-stroke") || "";
-      if (gk === activePick.groupKey && st === activePick.stroke) {
-        el.classList.remove("tcm-dim");
-        el.classList.add("tcm-active");
-      }
+    const actives = all.filter((el) => el.getAttribute("data-meridian") === activeMeridian);
+    actives.forEach((el) => {
+      el.classList.remove("tcm-dim");
+      el.classList.add("tcm-active");
     });
 
-    if (!labels || labels.length === 0) return;
+    // 在图上显示中文穴位名：放在右侧列表附近会挡图，所以直接放在图上靠近经络线群中心
+    if (!labels || labels.length === 0 || actives.length === 0) return;
 
-    // pick one representative path to place labels
-    const candidates = Array.from(svg.querySelectorAll<SVGPathElement>("path.tcm-meridian")).filter((p) => {
-      return (
-        (p.getAttribute("data-groupkey") || "") === activePick.groupKey &&
-        (p.getAttribute("data-stroke") || "") === activePick.stroke
-      );
-    });
-
-    let rep: SVGPathElement | null = null;
-    let bestLen = -1;
-    for (const p of candidates) {
-      try {
-        const len = p.getTotalLength();
-        if (len > bestLen) {
-          bestLen = len;
-          rep = p;
-        }
-      } catch {}
+    // 用“选中经络线群”的中心当锚点
+    let ax = 0, ay = 0;
+    for (const el of actives.slice(0, 25)) {
+      const c = centerBBox(el as any);
+      ax += c.x; ay += c.y;
     }
-    if (!rep || bestLen < 10) return;
+    ax /= Math.min(25, actives.length);
+    ay /= Math.min(25, actives.length);
 
     const vb = svg.viewBox?.baseVal;
     const rect = svg.getBoundingClientRect();
@@ -280,79 +255,29 @@ export default function InlineSvg({ src, activePick, labels, titles, onPick, onR
     const fontSize = 11 * scale;
     const strokeW = 3 * scale;
 
-    const show = labels.slice(0, 12);
-    const start = bestLen * 0.12;
-    const end = bestLen * 0.88;
-
+    const show = labels.slice(0, 10);
     for (let i = 0; i < show.length; i++) {
-      const t = show.length === 1 ? 0.5 : i / (show.length - 1);
-      const at = start + (end - start) * t;
-
-      let pt: DOMPoint | null = null;
-      try {
-        pt = rep.getPointAtLength(at);
-      } catch {
-        pt = null;
-      }
-      if (!pt) continue;
-
-      const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
-      text.setAttribute("x", String(pt.x));
-      text.setAttribute("y", String(pt.y));
-      text.setAttribute("font-size", String(fontSize));
-      text.setAttribute("font-family", "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto");
-      text.setAttribute("paint-order", "stroke fill");
-      text.setAttribute("stroke", "white");
-      text.setAttribute("stroke-width", String(strokeW));
-      text.setAttribute("stroke-linejoin", "round");
-      text.setAttribute("fill", "black");
-      text.textContent = `${show[i].code} ${show[i].name}`;
-      overlay.appendChild(text);
+      const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      t.setAttribute("x", String(ax));
+      t.setAttribute("y", String(ay + (i + 1) * fontSize * 1.2));
+      t.setAttribute("font-size", String(fontSize));
+      t.setAttribute("font-family", "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto");
+      t.setAttribute("paint-order", "stroke fill");
+      t.setAttribute("stroke", "white");
+      t.setAttribute("stroke-width", String(strokeW));
+      t.setAttribute("stroke-linejoin", "round");
+      t.setAttribute("fill", "black");
+      t.textContent = `${show[i].code} ${show[i].name}`;
+      overlay.appendChild(t);
     }
-  }, [activePick, labels]);
-
-  const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    const host = hostRef.current;
-    const svg = host?.querySelector("svg") as SVGSVGElement | null;
-    if (!svg) return;
-
-    const target = e.target as Element | null;
-    const hit = target?.closest(".tcm-meridian") as SVGGraphicsElement | null;
-    if (!hit) return;
-
-    const pick: ActivePick = {
-      groupKey: hit.getAttribute("data-groupkey") || domPathKey(hit.closest("g") ?? hit),
-      stroke: hit.getAttribute("data-stroke") || norm(getStroke(hit)),
-    };
-
-    // nearest title => hint
-    let hint: string | null = null;
-    const tc = centerBBox(hit as any);
-    const titleCenters = titleCentersRef.current;
-
-    if (titleCenters.length) {
-      let best = Infinity;
-      for (const t of titleCenters) {
-        const d = dist2(tc, t);
-        if (d < best) {
-          best = d;
-          hint = t.id;
-        }
-      }
-      if (best > 2600) hint = null;
-    }
-
-    onPick?.(pick, hint);
-  };
+  }, [activeMeridian, labels]);
 
   return (
     <div
       ref={hostRef}
-      onClick={handleClick}
       style={{ border: "1px solid #eee", borderRadius: 12, overflow: "hidden" }}
     />
   );
 }
-
 
 
