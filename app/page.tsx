@@ -1,71 +1,32 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
-import MeridianPanel from "../components/MeridianPanel";
-
-type Mode = "twelve" | "extra";
+import React from "react";
 
 export default function Page() {
-  const [mode, setMode] = useState<Mode>("twelve");
-
-  const svgPath = useMemo(() => {
-    return mode === "twelve"
-      ? "/assets/12meridians12shichen.svg"
-      : "/assets/12meridians8extra_CVGV.svg";
-  }, [mode]);
-
   return (
-    <main style={{ maxWidth: 1240, margin: "0 auto", padding: 18 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-        <div>
-          <div style={{ fontSize: 20, fontWeight: 900 }}>Meridian Map</div>
-          <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
-            点线段 ↔ 按钮联动；映射模式用于把线段归到 LU/LI…（一次性）。
-          </div>
-        </div>
-
-        <div style={{ display: "flex", gap: 8 }}>
-          <button
-            onClick={() => setMode("twelve")}
-            style={{
-              cursor: "pointer",
-              padding: "10px 12px",
-              borderRadius: 12,
-              border: mode === "twelve" ? "2px solid #111" : "1px solid #ddd",
-              background: mode === "twelve" ? "#111" : "#fafafa",
-              color: mode === "twelve" ? "#fff" : "#111",
-              fontWeight: 900,
-            }}
-          >
-            12经
-          </button>
-
-          <button
-            onClick={() => setMode("extra")}
-            style={{
-              cursor: "pointer",
-              padding: "10px 12px",
-              borderRadius: 12,
-              border: mode === "extra" ? "2px solid #111" : "1px solid #ddd",
-              background: mode === "extra" ? "#111" : "#fafafa",
-              color: mode === "extra" ? "#fff" : "#111",
-              fontWeight: 900,
-            }}
-          >
-            任督 + 奇经
-          </button>
-        </div>
+    <main style={{ maxWidth: 1000, margin: "0 auto", padding: 20 }}>
+      <h1 style={{ fontSize: 22, fontWeight: 900 }}>Meridian Map</h1>
+      <div style={{ marginTop: 8, fontSize: 13, opacity: 0.75, lineHeight: 1.6 }}>
+        三个页面分开：学习练习（判对错）、科普展示（点经络流动高亮）、管理员映射（维护答案库）。
       </div>
 
-      <div style={{ marginTop: 14 }}>
-        <MeridianPanel svgPath={svgPath} />
-      </div>
-
-      <div style={{ marginTop: 14, fontSize: 12, opacity: 0.7, lineHeight: 1.6 }}>
-        <div style={{ fontWeight: 900, marginBottom: 6 }}>文件位置检查</div>
-        <div>1) <code>public/assets/12meridians12shichen.svg</code></div>
-        <div>2) <code>public/assets/12meridians8extra_CVGV.svg</code></div>
+      <div style={{ marginTop: 16, display: "grid", gap: 10 }}>
+        <a href="/viewer" style={linkStyle}>① Viewer（点经络 → 流动高亮）</a>
+        <a href="/quiz" style={linkStyle}>② Quiz（练习：点对指定经络）</a>
+        <a href="/mapper" style={linkStyle}>③ Mapper（管理员：维护/导出映射）</a>
       </div>
     </main>
   );
 }
+
+const linkStyle: React.CSSProperties = {
+  display: "block",
+  padding: "12px 14px",
+  borderRadius: 12,
+  border: "1px solid #ddd",
+  background: "#fafafa",
+  fontWeight: 900,
+  textDecoration: "none",
+  color: "#111",
+};
+
