@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
-import InlineSvg, { type ActivePick } from "./InlineSvg";
+import InlineSvg from "./InlineSvg";
 import { MERIDIANS, type MeridianId } from "../lib/meridians";
 import { ACUPOINTS } from "../lib/acupoints";
 
@@ -9,7 +9,7 @@ type Lang = "zh" | "en";
 
 const TWELVE: MeridianId[] = ["LU","LI","ST","SP","HT","SI","BL","KI","PC","SJ","GB","LR"];
 
-// SVG 里那行标题（用它做“无校准绑定”）
+// SVG 里经络标题（韩文全名），用于“最近标题归属”
 const TITLE_HINTS: Array<{ id: MeridianId; text: string }> = [
   { id: "LU", text: "수태음폐경" },
   { id: "LI", text: "수양명대장경" },
@@ -25,105 +25,36 @@ const TITLE_HINTS: Array<{ id: MeridianId; text: string }> = [
   { id: "LR", text: "족궐음간경" },
 ];
 
-function dist2(a:{x:number;y:number}, b:{x:number;y:number}) {
-  const dx=a.x-b.x, dy=a.y-b.y;
-  return dx*dx+dy*dy;
-}
-
 export default function MeridianPanel({ svgPath }: { svgPath: string }) {
   const [lang, setLang] = useState<Lang>("zh");
-  const [selectedMeridian, setSelectedMeridian] = useState<MeridianId>("LU");
-  const [activePick, setActivePick] = useState<ActivePick | null>(null);
+  const [selected, setSelected] = useState<MeridianId>("LU");
 
-  // ✅ 自动绑定表：MeridianId -> ActivePick
-  const [map, setMap] = useState<Partial<Record<MeridianId, ActivePick>>>({});
+  const current = useMemo(() => MERIDIANS.find((m) => m.id === selected) ?? null, [selected]);
 
-  const selectedInfo = useMemo(
-    () => MERIDIANS.find((m) => m.id === selectedMeridian) ?? null,
-    [selectedMeridian]
-  );
-
+  // 图上要显示的穴位名称：来自你的 ACUPOINTS（中文/英文）
   const labels = useMemo(() => {
-    const pts = ACUPOINTS[selectedMeridian] ?? [];
+    const pts = ACUPOINTS[selected] ?? [];
     return pts.map((p) => ({
       code: p.code,
       name: lang === "zh" ? p.zh : (p.en || p.zh),
     }));
-  }, [selectedMeridian, lang]);
-
-  const onPickButton = (id: MeridianId) => {
-    setSelectedMeridian(id);
-    const p = map[id] ?? null;
-    setActivePick(p);
-  };
-
-  // 反查：pick 属于哪个经（用 map 精确匹配）
-  const findByPick = (p: ActivePick): MeridianId | null => {
-    for (const id of TWELVE) {
-      const mp = map[id];
-      if (mp && mp.groupKey === p.groupKey && mp.stroke === p.stroke) return id;
-    }
-    return null;
-  };
+  }, [selected, lang]);
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 16 }}>
       <div style={{ border: "1px solid #e5e5e5", borderRadius: 14, padding: 12, background: "#fff" }}>
         <InlineSvg
           src={svgPath}
-          activePick={activePick}
-          labels={activePick ? labels : []}
+          activeMeridian={selected}
+          labels={labels}
           titles={TITLE_HINTS}
-          onReady={({ meridianEls, titleCenters, getPickFromEl, getCenterOfEl }) => {
-            // ✅ 只做一次绑定（已有 map 就不重复覆盖）
-            setMap((prev) => {
-              // 如果已经有大部分绑定了，就不动
-              const has = TWELVE.filter((id) => prev[id]).length;
-              if (has >= 8) return prev;
-
-              const next: Partial<Record<MeridianId, ActivePick>> = { ...prev };
-
-              // 对每条经：找离标题最近的一条彩色经络线
-              for (const t of titleCenters) {
-                const id = t.id as MeridianId;
-                if (!TWELVE.includes(id)) continue;
-
-                let bestEl: SVGElement | null = null;
-                let best = Infinity;
-
-                for (const el of meridianEls) {
-                  const c = getCenterOfEl(el);
-                  const d = dist2(c, t);
-                  if (d < best) {
-                    best = d;
-                    bestEl = el;
-                  }
-                }
-
-                if (bestEl) next[id] = getPickFromEl(bestEl);
-              }
-
-              return next;
-            });
-
-            // 如果当前经还没 activePick，用绑定表补一个
-            setActivePick((ap) => ap ?? map[selectedMeridian] ?? null);
-          }}
-          onPick={(pick, hint) => {
-            setActivePick(pick);
-
-            // 优先用 hint（最近标题），不靠谱时用 map 精确匹配
-            if (hint && TWELVE.includes(hint as MeridianId)) {
-              setSelectedMeridian(hint as MeridianId);
-              return;
-            }
-
-            const m = findByPick(pick);
-            if (m) setSelectedMeridian(m);
+          onPickMeridian={(id) => {
+            // 点到某条线，已经映射成 LU/LI/ST...
+            if (id && TWELVE.includes(id as MeridianId)) setSelected(id as MeridianId);
           }}
         />
         <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
-          ✅ 只允许彩色经络线可点（人体黑灰轮廓不会再被点亮）。点线会联动右侧按钮；点按钮会让对应经络发光流动。
+          现在：点按钮 ↔ 点经络线 会互相联动。人体轮廓（黑灰线）不会被点亮。
         </div>
       </div>
 
@@ -166,11 +97,11 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
           <div style={{ fontWeight: 800, marginBottom: 8 }}>12 正经</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
             {MERIDIANS.filter((m) => TWELVE.includes(m.id)).map((m) => {
-              const active = selectedMeridian === m.id;
+              const active = selected === m.id;
               return (
                 <button
                   key={m.id}
-                  onClick={() => onPickButton(m.id)}
+                  onClick={() => setSelected(m.id)}
                   style={{
                     cursor: "pointer",
                     borderRadius: 10,
@@ -180,7 +111,6 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
                     color: active ? "#fff" : "#111",
                     fontWeight: 800,
                   }}
-                  title={map[m.id] ? "已绑定" : "正在自动绑定…"}
                 >
                   {m.id}
                 </button>
@@ -191,12 +121,12 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
 
         <div style={{ marginTop: 14, borderTop: "1px dashed #eee", paddingTop: 12 }}>
           <div style={{ fontWeight: 900, marginBottom: 6 }}>当前经络</div>
-          {selectedInfo ? (
+          {current ? (
             <>
               <div style={{ fontWeight: 900, fontSize: 15 }}>
-                {selectedInfo.id} · {lang === "zh" ? selectedInfo.zh : selectedInfo.en}
+                {current.id} · {lang === "zh" ? current.zh : current.en}
               </div>
-              <div style={{ marginTop: 6, fontSize: 13, opacity: 0.9 }}>{selectedInfo.blurb}</div>
+              <div style={{ marginTop: 6, fontSize: 13, opacity: 0.9 }}>{current.blurb}</div>
             </>
           ) : null}
         </div>
@@ -204,11 +134,11 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
         <div style={{ marginTop: 12 }}>
           <div style={{ fontWeight: 900, marginBottom: 6 }}>穴位（来自 ACUPOINTS）</div>
           <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 8 }}>
-            现在图上会沿选中经络显示穴位名（中/英切换），不依赖 SVG 自带韩文。
+            图中间那排韩文是 SVG 自带标识；中文穴位名是我们从 ACUPOINTS 生成并叠加显示。
           </div>
 
           <div style={{ display: "grid", gap: 6, maxHeight: 260, overflow: "auto" }}>
-            {(ACUPOINTS[selectedMeridian] ?? []).slice(0, 60).map((p) => (
+            {(ACUPOINTS[selected] ?? []).slice(0, 80).map((p) => (
               <div key={p.code} style={{ padding: 8, border: "1px solid #eee", borderRadius: 10 }}>
                 <div style={{ fontWeight: 800 }}>
                   {p.code} · {lang === "zh" ? p.zh : (p.en || p.zh)}
@@ -216,31 +146,12 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
                 {lang === "zh" && p.en ? <div style={{ fontSize: 12, opacity: 0.7 }}>{p.en}</div> : null}
               </div>
             ))}
-            {(ACUPOINTS[selectedMeridian] ?? []).length === 0 ? (
+            {(ACUPOINTS[selected] ?? []).length === 0 ? (
               <div style={{ fontSize: 12, opacity: 0.7 }}>
                 这个经络在 ACUPOINTS 里还没填穴位数据，所以图上也不会显示名字。
               </div>
             ) : null}
           </div>
-        </div>
-
-        <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
-          <button
-            onClick={() => setActivePick(null)}
-            style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #ddd", cursor: "pointer" }}
-          >
-            清除高亮
-          </button>
-          <button
-            onClick={() => {
-              // 强制重新绑定一次（给你调试用）
-              setMap({});
-              setActivePick(null);
-            }}
-            style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #ddd", cursor: "pointer" }}
-          >
-            重新绑定
-          </button>
         </div>
       </div>
     </div>
