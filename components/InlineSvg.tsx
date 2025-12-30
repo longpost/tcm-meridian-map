@@ -9,7 +9,7 @@ type Props = {
 };
 
 function ensureStyleOnce() {
-  const id = "__tcm_svg_pick_style__";
+  const id = "__tcm_flow_style__";
   if (document.getElementById(id)) return;
   const style = document.createElement("style");
   style.id = id;
@@ -29,13 +29,31 @@ function ensureStyleOnce() {
 export default function InlineSvg({ src, activeGroup, onPickGroup }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [raw, setRaw] = useState<string>("");
+  const [err, setErr] = useState<string>("");
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const r = await fetch(src);
-      const t = await r.text();
-      if (!cancelled) setRaw(t);
+      try {
+        setErr("");
+        setRaw("");
+
+        const r = await fetch(src, { cache: "no-store" });
+        if (!r.ok) {
+          setErr(`SVG 读取失败：${r.status} ${r.statusText}（${src}）`);
+          return;
+        }
+
+        const t = await r.text();
+        if (!t.includes("<svg")) {
+          setErr(`SVG 内容不像 SVG（${src}）——可能返回了 HTML/404 页面。`);
+          return;
+        }
+
+        if (!cancelled) setRaw(t);
+      } catch (e: any) {
+        setErr(`SVG 读取异常：${String(e?.message || e)}（${src}）`);
+      }
     })();
     return () => {
       cancelled = true;
@@ -87,11 +105,19 @@ export default function InlineSvg({ src, activeGroup, onPickGroup }: Props) {
   }, [activeGroup]);
 
   return (
-    <div
-      ref={hostRef}
-      style={{ border: "1px solid #eee", borderRadius: 12, overflow: "hidden" }}
-    />
+    <div>
+      {err ? (
+        <div style={{ padding: 10, border: "1px solid #f2c1c1", background: "#fff6f6", borderRadius: 12, marginBottom: 10 }}>
+          <div style={{ fontWeight: 900, marginBottom: 6 }}>图没显示的原因：</div>
+          <div style={{ fontSize: 13, lineHeight: 1.6 }}>{err}</div>
+          <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
+            你直接打开：<code>{src}</code> 看是不是 404。
+          </div>
+        </div>
+      ) : null}
+
+      <div ref={hostRef} style={{ border: "1px solid #eee", borderRadius: 12, overflow: "hidden" }} />
+    </div>
   );
 }
-
 
