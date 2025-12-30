@@ -1,272 +1,118 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useMemo, useState } from "react";
 import InlineSvg, { type ActivePick } from "./InlineSvg";
 import { MERIDIANS, type MeridianId } from "../lib/meridians";
+import { ACUPOINTS } from "../lib/acupoints";
 
-// SVG 里的经络标题（你这张 Commons 文件里有）
-const TITLES: Array<{ id: MeridianId; title: string }> = [
-  { id: "LU", title: "수태음폐경" },
-  { id: "LI", title: "수양명대장경" },
-  { id: "ST", title: "족양명위경" },
-  { id: "SP", title: "족태음비경" },
-  { id: "HT", title: "수소음심경" },
-  { id: "SI", title: "수태양소장경" },
-  { id: "BL", title: "족태양방광경" },
-  { id: "KI", title: "족소음신경" },
-  { id: "PC", title: "수궐음심포경" },
-  { id: "SJ", title: "수소양삼초경" },
-  { id: "GB", title: "족소양담경" },
-  { id: "LR", title: "족궐음간경" },
+type Lang = "zh" | "en";
+
+const TITLE_HINTS: Array<{ id: MeridianId; text: string }> = [
+  { id: "LU", text: "수태음폐경" },
+  { id: "LI", text: "수양명대장경" },
+  { id: "ST", text: "족양명위경" },
+  { id: "SP", text: "족태음비경" },
+  { id: "HT", text: "수소음심경" },
+  { id: "SI", text: "수태양소장경" },
+  { id: "BL", text: "족태양방광경" },
+  { id: "KI", text: "족소음신경" },
+  { id: "PC", text: "수궐음심포경" },
+  { id: "SJ", text: "수소양삼초경" },
+  { id: "GB", text: "족소양담경" },
+  { id: "LR", text: "족궐음간경" },
 ];
 
-function injectCssOnce() {
-  const id = "__tcm_meridian_css__";
-  if (document.getElementById(id)) return;
-  const style = document.createElement("style");
-  style.id = id;
-  style.textContent = `
-/* 只允许经络线可点 */
-.tcm-meridian-path { pointer-events: stroke !important; cursor: pointer; }
-
-/* 非选中：淡化 */
-.tcm-meridian-path.tcm-dim { opacity: 0.15; }
-
-/* 选中：发光+流动，不硬加粗 */
-.tcm-meridian-path.tcm-active {
-  opacity: 1 !important;
-  filter: drop-shadow(0 0 6px rgba(80,160,255,0.75)) drop-shadow(0 0 14px rgba(80,160,255,0.45));
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-dasharray: 7 6;
-  animation: tcm-flow 1.15s linear infinite;
-}
-@keyframes tcm-flow { 0%{ stroke-dashoffset:0; } 100%{ stroke-dashoffset:-26; } }
-
-/* 穴位编号文字：默认隐藏，选中经络时才显示附近的 */
-.tcm-point-text { display: none !important; }
-.tcm-point-text.tcm-show { display: inline !important; }
-
-/* 强制小字号，避免巨大字 */
-.tcm-point-text { font-size: 3.2px !important; }
-`;
-  document.head.appendChild(style);
-}
-
-function getTextContent(el: SVGTextElement) {
-  return (el.textContent || "").trim();
-}
-function centerOfBBox(el: SVGGraphicsElement) {
-  const b = el.getBBox();
-  return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
-}
-function dist2(a: { x: number; y: number }, b: { x: number; y: number }) {
-  const dx = a.x - b.x;
-  const dy = a.y - b.y;
-  return dx * dx + dy * dy;
-}
-
-/** 候选经络线：细、长、无填充、带 stroke */
-function pickMeridianCandidates(svg: SVGSVGElement): SVGPathElement[] {
-  const paths = Array.from(svg.querySelectorAll<SVGPathElement>("path"));
-  const out: SVGPathElement[] = [];
-  for (const p of paths) {
-    const fill = (p.getAttribute("fill") || "").trim().toLowerCase();
-    if (fill && fill !== "none" && fill !== "transparent") continue;
-
-    const swRaw =
-      p.getAttribute("stroke-width") ||
-      (p.getAttribute("style") || "").match(/stroke-width:\s*([^;]+)/i)?.[1] ||
-      "";
-    const sw = parseFloat(String(swRaw).replace("px", "")) || 0;
-    if (sw <= 0 || sw > 1.2) continue;
-
-    const stroke =
-      (p.getAttribute("stroke") ||
-        (p.getAttribute("style") || "").match(/stroke:\s*([^;]+)/i)?.[1] ||
-        "").trim();
-    if (!stroke || stroke === "none") continue;
-
-    let len = 0;
-    try {
-      len = p.getTotalLength();
-    } catch {
-      len = 0;
-    }
-    if (len < 120) continue;
-
-    out.push(p);
-  }
-  return out;
-}
-
-/** 把 “数字开头” 的 text 当作穴位/编号文字（默认隐藏） */
-function tagPointTexts(svg: SVGSVGElement) {
-  const texts = Array.from(svg.querySelectorAll<SVGTextElement>("text"));
-  for (const t of texts) {
-    const s = getTextContent(t);
-    if (/^\d+/.test(s)) t.classList.add("tcm-point-text");
-  }
-}
-
-/** 自动把候选经络线打上 data-meridian（启发式：标题附近） */
-function autoTagMeridians(svg: SVGSVGElement, candidates: SVGPathElement[]) {
-  const texts = Array.from(svg.querySelectorAll<SVGTextElement>("text"));
-  const titleNodes: Partial<Record<MeridianId, SVGTextElement>> = {};
-
-  for (const t of texts) {
-    const s = getTextContent(t);
-    const hit = TITLES.find((x) => x.title === s);
-    if (hit) titleNodes[hit.id] = t;
-  }
-
-  for (const { id } of TITLES) {
-    const titleEl = titleNodes[id];
-    if (!titleEl) continue;
-
-    const tc = centerOfBBox(titleEl as any);
-
-    const ranked = candidates
-      .map((p) => {
-        const pc = centerOfBBox(p as any);
-        return { p, d: dist2(tc, pc) };
-      })
-      .sort((a, b) => a.d - b.d);
-
-    // 前 N 个作为“这条经”的线段集合
-    const selected = ranked.slice(0, 26).map((x) => x.p);
-    for (const p of selected) p.setAttribute("data-meridian", id);
-  }
-}
-
-/** 应用选择：高亮经络线 + 显示附近穴位文字 */
-function applySelection(svg: SVGSVGElement, id: MeridianId | null) {
-  const paths = Array.from(svg.querySelectorAll<SVGPathElement>("path.tcm-meridian-path"));
-  paths.forEach((p) => {
-    p.classList.remove("tcm-active");
-    p.classList.remove("tcm-dim");
-  });
-  paths.forEach((p) => p.classList.add("tcm-dim"));
-
-  const pointTexts = Array.from(svg.querySelectorAll<SVGTextElement>("text.tcm-point-text"));
-  pointTexts.forEach((t) => t.classList.remove("tcm-show"));
-
-  if (!id) return;
-
-  const actives = Array.from(svg.querySelectorAll<SVGPathElement>(`path.tcm-meridian-path[data-meridian="${id}"]`));
-  actives.forEach((p) => {
-    p.classList.remove("tcm-dim");
-    p.classList.add("tcm-active");
-  });
-
-  // 只显示靠近这些线的穴位文字（避免全屏糊）
-  if (actives.length) {
-    const centers = actives.slice(0, 30).map((p) => centerOfBBox(p as any));
-    for (const t of pointTexts) {
-      const tc = centerOfBBox(t as any);
-      let best = Infinity;
-      for (const c of centers) best = Math.min(best, dist2(tc, c));
-      if (best < 320) t.classList.add("tcm-show");
-    }
-  }
-}
-
-function isMeridianId(x: string): x is MeridianId {
-  return (MERIDIANS as any[]).some((m) => m.id === x);
-}
-
-/** 从 SVG 点击反查是哪条经 */
-function getMeridianFromClickedPath(path: SVGPathElement): MeridianId | null {
-  const m = path.getAttribute("data-meridian");
-  if (!m) return null;
-  return isMeridianId(m) ? (m as MeridianId) : null;
-}
-
 export default function MeridianPanel({ svgPath }: { svgPath: string }) {
-  const [selected, setSelected] = useState<MeridianId | null>(null);
-  const hostRef = useRef<HTMLDivElement | null>(null);
+  const [lang, setLang] = useState<Lang>("zh");
 
-  const current = useMemo(() => (selected ? MERIDIANS.find((m) => m.id === selected) : null), [selected]);
+  const [selectedMeridian, setSelectedMeridian] = useState<MeridianId>("LU");
+  const [activePick, setActivePick] = useState<ActivePick | null>(null);
 
-  useEffect(() => {
-    injectCssOnce();
-  }, []);
+  const selectedInfo = useMemo(
+    () => MERIDIANS.find((m) => m.id === selectedMeridian) ?? null,
+    [selectedMeridian]
+  );
 
-  useEffect(() => {
-    let cleanup: null | (() => void) = null;
+  // 图上要显示的穴位标签：来自你自己的 ACUPOINTS（可双语）
+  const labels = useMemo(() => {
+    const pts = ACUPOINTS[selectedMeridian] ?? [];
+    return pts.map((p) => ({
+      code: p.code,
+      name: lang === "zh" ? p.zh : (p.en || p.zh),
+    }));
+  }, [selectedMeridian, lang]);
 
-    const tryInit = () => {
-      const svg = hostRef.current?.querySelector("svg") as SVGSVGElement | null;
-      if (!svg) return false;
-
-      // 禁止 SVG 内所有元素点击，避免点到人体/文字/点
-      svg.querySelectorAll<SVGElement>("*").forEach((n) => {
-        (n as any).style.pointerEvents = "none";
-      });
-
-      const candidates = pickMeridianCandidates(svg);
-      candidates.forEach((p) => {
-        p.classList.add("tcm-meridian-path");
-        (p as any).style.pointerEvents = "stroke";
-      });
-
-      tagPointTexts(svg);
-      autoTagMeridians(svg, candidates);
-
-      const onClick = (evt: MouseEvent) => {
-        const target = evt.target as Element | null;
-        const path = target?.closest("path.tcm-meridian-path") as SVGPathElement | null;
-        if (!path) return;
-
-        const mid = getMeridianFromClickedPath(path);
-        setSelected(mid);
-        applySelection(svg, mid);
-      };
-      svg.addEventListener("click", onClick);
-
-      applySelection(svg, selected);
-
-      cleanup = () => {
-        svg.removeEventListener("click", onClick);
-      };
-      return true;
-    };
-
-    const timer = setInterval(() => {
-      if (tryInit()) clearInterval(timer);
-    }, 60);
-
-    return () => {
-      clearInterval(timer);
-      cleanup?.();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [svgPath]);
+  const twelveMeridians = useMemo(
+    () => MERIDIANS.filter((m) => ["LU","LI","ST","SP","HT","SI","BL","KI","PC","SJ","GB","LR"].includes(m.id)),
+    []
+  );
 
   const onPickButton = (id: MeridianId) => {
-    setSelected(id);
-    const svg = hostRef.current?.querySelector("svg") as SVGSVGElement | null;
-    if (svg) applySelection(svg, id);
+    setSelectedMeridian(id);
+    // 没有“经络-线”硬编码映射时，按钮按下先清高亮，
+    // 你也可以保留上一条 pick，让它继续高亮
+    // 这里更直白：清掉，等用户点线或后续我们做标注版再做到“按钮必定位”。
+    setActivePick(null);
   };
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 16 }}>
-      <div ref={hostRef} style={{ border: "1px solid #e5e5e5", borderRadius: 14, padding: 12, background: "#fff" }}>
-        {/* 你的 InlineSvg 要求 activePick + labels，这里给默认值 */}
-        <InlineSvg src={svgPath} activePick={null as ActivePick | null} labels={[]} />
+      <div style={{ border: "1px solid #e5e5e5", borderRadius: 14, padding: 12, background: "#fff" }}>
+        <InlineSvg
+          src={svgPath}
+          activePick={activePick}
+          labels={activePick ? labels : []}
+          titles={TITLE_HINTS}
+          onPick={(pick, hint) => {
+            setActivePick(pick);
+            if (hint) setSelectedMeridian(hint as MeridianId);
+          }}
+        />
+        <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
+          点线会高亮；右侧会自动识别为离标题最近的经络（LU/LI/…）。穴位名来自你的 ACUPOINTS（可中英切换）。
+        </div>
       </div>
 
       <div style={{ border: "1px solid #e5e5e5", borderRadius: 14, padding: 12, background: "#fff" }}>
-        <div style={{ fontWeight: 900, fontSize: 16 }}>经络（科普）</div>
-        <div style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>点按钮或点图上的经络线。</div>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+          <div style={{ fontWeight: 900, fontSize: 16 }}>经络（科普）</div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button
+              onClick={() => setLang("zh")}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 10,
+                border: "1px solid #ddd",
+                background: lang === "zh" ? "#111" : "#fff",
+                color: lang === "zh" ? "#fff" : "#111",
+                fontWeight: 800,
+                cursor: "pointer",
+              }}
+            >
+              中文
+            </button>
+            <button
+              onClick={() => setLang("en")}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 10,
+                border: "1px solid #ddd",
+                background: lang === "en" ? "#111" : "#fff",
+                color: lang === "en" ? "#fff" : "#111",
+                fontWeight: 800,
+                cursor: "pointer",
+              }}
+            >
+              English
+            </button>
+          </div>
+        </div>
 
-        <div style={{ marginTop: 12 }}>
+        <div style={{ marginTop: 10 }}>
           <div style={{ fontWeight: 800, marginBottom: 8 }}>12 正经</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
-            {MERIDIANS.filter((m) =>
-              ["LU", "LI", "ST", "SP", "HT", "SI", "BL", "KI", "PC", "SJ", "GB", "LR"].includes(m.id)
-            ).map((m) => {
-              const active = selected === m.id;
+            {twelveMeridians.map((m) => {
+              const active = selectedMeridian === m.id;
               return (
                 <button
                   key={m.id}
@@ -289,21 +135,47 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
         </div>
 
         <div style={{ marginTop: 14, borderTop: "1px dashed #eee", paddingTop: 12 }}>
-          <div style={{ fontWeight: 900, marginBottom: 6 }}>当前选中</div>
-          {current ? (
+          <div style={{ fontWeight: 900, marginBottom: 6 }}>当前经络</div>
+          {selectedInfo ? (
             <>
               <div style={{ fontWeight: 900, fontSize: 15 }}>
-                {current.id} · {current.zh} <span style={{ opacity: 0.75, fontWeight: 600 }}>({current.en})</span>
+                {selectedInfo.id} · {lang === "zh" ? selectedInfo.zh : selectedInfo.en}
               </div>
-              <div style={{ marginTop: 6, fontSize: 13, opacity: 0.9 }}>{current.blurb}</div>
-              <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>
-                说明：这张 SVG 自带的穴位文字多为编号+韩文，我已默认隐藏，只在选中经络时显示靠近该经络的那部分，并强制缩小字号。
-                将来要“点某个穴位弹出标准中文/英文名”，需要你自己的穴位数据表（code/zh/en）并把 SVG 点位标注成 data-point（我可以给你标注版 SVG）。
-              </div>
+              <div style={{ marginTop: 6, fontSize: 13, opacity: 0.9 }}>{selectedInfo.blurb}</div>
             </>
-          ) : (
-            <div style={{ fontSize: 13, opacity: 0.75 }}>（未选择）</div>
-          )}
+          ) : null}
+        </div>
+
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontWeight: 900, marginBottom: 6 }}>穴位（数据来自 ACUPOINTS）</div>
+          <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 8 }}>
+            你现在“图上看不到穴位名”的根因：SVG 里没标准穴位编码。要标准化点击穴位，最终要做“标注版 SVG（data-point=LU1…）”。
+          </div>
+
+          <div style={{ display: "grid", gap: 6, maxHeight: 260, overflow: "auto" }}>
+            {(ACUPOINTS[selectedMeridian] ?? []).map((p) => (
+              <div key={p.code} style={{ padding: 8, border: "1px solid #eee", borderRadius: 10 }}>
+                <div style={{ fontWeight: 800 }}>
+                  {p.code} · {lang === "zh" ? p.zh : (p.en || p.zh)}
+                </div>
+                {lang === "zh" && p.en ? <div style={{ fontSize: 12, opacity: 0.7 }}>{p.en}</div> : null}
+              </div>
+            ))}
+            {(ACUPOINTS[selectedMeridian] ?? []).length === 0 ? (
+              <div style={{ fontSize: 12, opacity: 0.7 }}>
+                这个经络在 ACUPOINTS 里还没填穴位数据，所以图上也不会显示名字。
+              </div>
+            ) : null}
+          </div>
+        </div>
+
+        <div style={{ marginTop: 12 }}>
+          <button
+            onClick={() => setActivePick(null)}
+            style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #ddd", cursor: "pointer" }}
+          >
+            清除高亮
+          </button>
         </div>
       </div>
     </div>
