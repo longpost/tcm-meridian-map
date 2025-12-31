@@ -9,7 +9,7 @@ const TWELVE: TwelveId[] = ["LU","LI","ST","SP","HT","SI","BL","KI","PC","SJ","G
 export default function ViewerPage() {
   const [selected, setSelected] = useState<TwelveId>("LU");
 
-  const svgPath = "/assets/12meridians12shichen_clickable.svg";
+  const svgPath = "/assets/12meridians12shichen.svg";
 
   const activeSegKeys = useMemo(() => {
     return MERIDIAN_MAP.twelve[selected] || [];
