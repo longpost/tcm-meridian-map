@@ -22,6 +22,9 @@ function reverseLookup(map: Record<string, string[]>, segKey: string): string | 
   for (const [k, arr] of Object.entries(map)) if (arr.includes(segKey)) return k;
   return null;
 }
+function normColor(c: string) {
+  return (c || "").trim().toLowerCase();
+}
 
 export default function MeridianPanel({ svgPath }: { svgPath: string }) {
   const mode: Mode = isTwelveMode(svgPath) ? "twelve" : "extra";
@@ -35,13 +38,17 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
   const [draftMap, setDraftMap] = useState<MapShape>(MERIDIAN_MAP);
   const [meta, setMeta] = useState<SvgMeta | null>(null);
 
+  // ✅ 关键：避免“读完之前就写回覆盖”
   const [loaded, setLoaded] = useState(false);
 
-  // ✅ 新增：预览流动（点线就立即流动、看清楚）
+  // ✅ 预览流动（点线就立刻流动，方便你检查）
   const [previewSegKeys, setPreviewSegKeys] = useState<string[]>([]);
   const previewTimer = useRef<number | null>(null);
 
-  // 1) 先读 localStorage，读完才允许回写
+  // ✅ Debug：显示最后点到的 segKey（用来判断到底有没有触发 click）
+  const [lastPick, setLastPick] = useState<string>("");
+
+  // 1) 读 localStorage
   useEffect(() => {
     try {
       const raw = localStorage.getItem(storageKey(svgPath));
@@ -53,6 +60,7 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
     setLoaded(true);
   }, [svgPath]);
 
+  // 2) 读完才写回
   useEffect(() => {
     if (!loaded) return;
     try {
@@ -60,18 +68,18 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
     } catch {}
   }, [draftMap, svgPath, loaded]);
 
+  // 当前桶
   const bucketSegKeys = useMemo(() => {
     return mode === "twelve"
       ? (draftMap.twelve[selectedTwelve] || [])
       : (draftMap.extra[selectedExtra] || []);
   }, [draftMap, mode, selectedTwelve, selectedExtra]);
 
-  // ✅ mapper 显示的“流动”优先级：
-  // 1) 如果有 preview（刚点线），先流动 preview
-  // 2) 否则流动当前选中桶（跟 view 一样）
+  // mapper/view 都用同一套 “activeSegKeys” 来触发流动：
+  // - 如果刚点线段，先预览那条线
+  // - 否则流动当前桶
   const activeSegKeys = useMemo(() => {
-    if (previewSegKeys.length) return previewSegKeys;
-    return bucketSegKeys;
+    return previewSegKeys.length ? previewSegKeys : bucketSegKeys;
   }, [previewSegKeys, bucketSegKeys]);
 
   const startPreview = (keys: string[]) => {
@@ -81,8 +89,8 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
   };
 
   const onPickSeg = ({ segKey }: { segKey: string }) => {
-    // 任何时候点到线：先给个即时流动反馈
-    startPreview([segKey]);
+    setLastPick(segKey);
+    startPreview([segKey]); // ✅ 不管啥模式，先让它动起来，便于确认你点到了什么
 
     if (admin) {
       // ✅ 映射模式：加入/移除当前桶
@@ -113,14 +121,78 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
       localStorage.removeItem(storageKey(svgPath));
     } catch {}
     setDraftMap(MERIDIAN_MAP);
+    setLastPick("");
     setPreviewSegKeys([]);
     alert("已清空本 SVG 的本地映射（localStorage）。");
   };
 
-  // ✅ 你提到“只有6组韩文为什么不是12”：
-  // 这张 SVG 的图例本来就可能只画了 6 个（或者剩下 6 个在别处/用别的形式）。
-  // 我这里已经把韩文 text 全删掉了（InlineSvg 里做的），避免视觉干扰。
-  // 要加英文名称：建议在右侧做一个“颜色->经络”小图例（后面我可以加）。
+  // ✅ Auto-map（按颜色）——清空后还能重新生成
+  const autoMapByColor = () => {
+    if (mode !== "twelve") {
+      alert("Auto-map 目前只对 12经这张图做。");
+      return;
+    }
+    if (!meta || meta.segments.length === 0) {
+      alert("图还没加载完（meta 为空），等一下再点。");
+      return;
+    }
+
+    // segments 里必须有 stroke（InlineSvg 负责提供）
+    const hasStroke = meta.segments.some((s: any) => !!(s as any).stroke);
+    if (!hasStroke) {
+      alert("当前 InlineSvg 没有回传 stroke 颜色，无法按颜色自动分组。请先换回带 stroke 的 InlineSvg。");
+      return;
+    }
+
+    // 颜色 -> segKeys
+    const colorBuckets = new Map<string, string[]>();
+    for (const s of meta.segments as any[]) {
+      const c = normColor(s.stroke || "");
+      if (!c) continue;
+      const arr = colorBuckets.get(c) || [];
+      arr.push(s.segKey);
+      colorBuckets.set(c, arr);
+    }
+
+    const top = Array.from(colorBuckets.entries())
+      .map(([color, segKeys]) => ({ color, segKeys, n: segKeys.length }))
+      .sort((a, b) => b.n - a.n)
+      .slice(0, 12);
+
+    if (top.length < 8) {
+      alert(`颜色桶太少（${top.length}），这张 SVG 可能不是按颜色区分经络。`);
+      return;
+    }
+
+    // 计算每个颜色桶中心点（近似用于排序稳定）
+    const segPos = new Map((meta.segments as any[]).map((s) => [s.segKey, s]));
+    const groups = top.map((g) => {
+      let sx = 0, sy = 0, cnt = 0;
+      for (const k of g.segKeys) {
+        const p = segPos.get(k);
+        if (!p) continue;
+        sx += p.cx; sy += p.cy; cnt++;
+      }
+      return { ...g, cx: cnt ? sx / cnt : 0, cy: cnt ? sy / cnt : 0 };
+    });
+
+    // 稳定分配：按左右分 6+6 再各自按 y 排
+    const sorted = groups.slice().sort((a, b) => a.cx - b.cx);
+    const left = sorted.slice(0, 6).sort((a, b) => a.cy - b.cy);
+    const right = sorted.slice(6, 12).sort((a, b) => a.cy - b.cy);
+    const merged = [...left, ...right];
+
+    setDraftMap((prev) => {
+      const next: MapShape = JSON.parse(JSON.stringify(prev));
+      for (const id of TWELVE) next.twelve[id] = [];
+      for (let i = 0; i < Math.min(12, merged.length); i++) {
+        next.twelve[TWELVE[i]] = merged[i].segKeys.slice();
+      }
+      return next;
+    });
+
+    alert("已生成 12 组初稿。现在进入映射模式，逐个按钮检查，点线段增删修正即可。");
+  };
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 12 }}>
@@ -129,22 +201,23 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
         <InlineSvg
           src={svgPath}
           activeSegKeys={activeSegKeys}
-          // 映射模式下给 draft 也亮出来，方便你看当前桶覆盖范围
           draftSegKeys={admin ? bucketSegKeys : []}
           onPickSeg={onPickSeg}
           onMeta={setMeta}
         />
       </div>
 
-      {/* 右：控制/列表 */}
+      {/* 右：控制 + 列表 */}
       <div style={{ border: "1px solid #e5e5e5", borderRadius: 14, padding: 12, background: "#fff" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
           <div>
             <div style={{ fontWeight: 900, fontSize: 16 }}>
-              {mode === "twelve" ? "12经络（Mapper）" : "任督 + 奇经八脉（Mapper）"}
+              {mode === "twelve" ? "Mapper（12经）" : "Mapper（奇经）"}
             </div>
-            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.7 }}>
-              admin：<b>{String(admin)}</b>｜loaded：<b>{String(loaded)}</b>
+            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.7, lineHeight: 1.5 }}>
+              loaded: <b>{String(loaded)}</b><br />
+              可点线段总数: <b>{meta?.segments?.length ?? "?"}</b><br />
+              最后点到: <code style={{ fontSize: 11 }}>{lastPick || "（无）"}</code>
             </div>
           </div>
 
@@ -164,6 +237,54 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
           </button>
         </div>
 
+        {admin && mode === "twelve" ? (
+          <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              onClick={autoMapByColor}
+              style={{
+                cursor: "pointer",
+                padding: "10px 12px",
+                borderRadius: 10,
+                border: "1px solid #ddd",
+                background: "#fafafa",
+                fontWeight: 900,
+              }}
+            >
+              Auto-map（按颜色，12组）
+            </button>
+
+            <button
+              onClick={hardReset}
+              style={{
+                cursor: "pointer",
+                padding: "10px 12px",
+                borderRadius: 10,
+                border: "1px solid #f2c1c1",
+                background: "#fff6f6",
+                fontWeight: 900,
+              }}
+            >
+              强制重置
+            </button>
+          </div>
+        ) : admin ? (
+          <div style={{ marginTop: 10 }}>
+            <button
+              onClick={hardReset}
+              style={{
+                cursor: "pointer",
+                padding: "10px 12px",
+                borderRadius: 10,
+                border: "1px solid #f2c1c1",
+                background: "#fff6f6",
+                fontWeight: 900,
+              }}
+            >
+              强制重置
+            </button>
+          </div>
+        ) : null}
+
         <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: mode === "twelve" ? "repeat(6, 1fr)" : "repeat(4, 1fr)", gap: 8 }}>
           {ids.map((id) => {
             const on = currentId === id;
@@ -173,9 +294,7 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
                 onClick={() => {
                   if (mode === "twelve") setSelectedTwelve(id as TwelveId);
                   else setSelectedExtra(id as ExtraId);
-
-                  // ✅ mapper 选名称立即流动（跟 view 一样）
-                  // 这里不需要额外处理：activeSegKeys 会指向该桶
+                  // ✅ 选名称立即流动：activeSegKeys 会用 bucketSegKeys
                 }}
                 style={{
                   cursor: "pointer",
@@ -193,35 +312,15 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
           })}
         </div>
 
-        <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75, lineHeight: 1.6 }}>
-          当前选中：<code>{currentId}</code><br />
-          当前桶线段数：<b>{bucketSegKeys.length}</b><br />
-          可点线段总数：<b>{meta?.segments?.length ?? "?"}</b>
+        <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
+          当前选中：<code>{currentId}</code>｜当前桶线段数：<b>{bucketSegKeys.length}</b>
         </div>
 
-        {admin ? (
-          <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button
-              onClick={hardReset}
-              style={{
-                cursor: "pointer",
-                padding: "10px 12px",
-                borderRadius: 10,
-                border: "1px solid #f2c1c1",
-                background: "#fff6f6",
-                fontWeight: 900,
-              }}
-            >
-              强制重置（清空本地映射）
-            </button>
-          </div>
-        ) : null}
-
-        {/* ✅ 关键：把“加上没有”变成看得见 */}
+        {/* 当前桶列表：你点线段加没加，一眼就知道 */}
         <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12 }}>
           <div style={{ fontWeight: 900 }}>当前桶 segKey 列表</div>
           <div style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>
-            映射模式下：点线段 = 加/删；点完马上会预览流动 0.8 秒。
+            映射模式：点线段 = 加/删；点完会预览流动 0.8 秒。
           </div>
 
           <div style={{ marginTop: 8, maxHeight: 240, overflow: "auto", border: "1px solid #eee", borderRadius: 12, padding: 8 }}>
@@ -234,7 +333,6 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
                   {admin ? (
                     <button
                       onClick={() => {
-                        // 删除该 segKey
                         setDraftMap((prev) => {
                           const next: MapShape = JSON.parse(JSON.stringify(prev));
                           const bucket = mode === "twelve"
@@ -245,6 +343,7 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
                           return next;
                         });
                         startPreview([k]);
+                        setLastPick(k);
                       }}
                       style={{
                         cursor: "pointer",
