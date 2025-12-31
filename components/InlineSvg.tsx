@@ -5,7 +5,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 export type PickSeg = { segKey: string };
 
 export type SvgMeta = {
-  segments: Array<{ segKey: string; cx: number; cy: number; stroke: string }>;
+  segments: Array<{ segKey: string; cx: number; cy: number; stroke?: string }>;
   labels: Array<{ text: string; cx: number; cy: number }>;
 };
 
@@ -14,10 +14,11 @@ type Props = {
   activeSegKeys: string[];
   draftSegKeys?: string[];
   onPickSeg?: (pick: PickSeg) => void;
-  onMeta?: (meta: SvgMeta) => void; // ✅ 仅新增
+  onMeta?: (meta: SvgMeta) => void; // 可选
 };
 
 const SHAPE_SELECTOR = "path, polyline, line";
+const KOREAN_RE = /[가-힣]/;
 
 function norm(s: string) {
   return (s || "").trim().toLowerCase().replace(/\s+/g, "");
@@ -138,11 +139,14 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
         setErr(`SVG 读取异常：${String(e?.message || e)}（${src}）`);
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [src]);
 
   useEffect(() => {
     ensureStyleOnce();
+
     const host = hostRef.current;
     if (!host) return;
 
@@ -162,8 +166,19 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
     (svg.style as any).display = "block";
     (svg.style as any).maxWidth = "100%";
 
+    // 默认全不可点
     svg.querySelectorAll<SVGElement>("*").forEach((n) => ((n as any).style.pointerEvents = "none"));
 
+    // ✅ 删除所有含韩文的 text（中间那几条图例就没了）
+    try {
+      const texts = Array.from(svg.querySelectorAll<SVGTextElement>("text"));
+      for (const t of texts) {
+        const txt = (t.textContent || "").trim();
+        if (txt && KOREAN_RE.test(txt)) t.remove();
+      }
+    } catch {}
+
+    // 只挑彩色线段
     const candidates = Array.from(svg.querySelectorAll<SVGElement>(SHAPE_SELECTOR)).filter(looksMeridianSegment);
 
     const segMeta: SvgMeta["segments"] = [];
@@ -176,17 +191,24 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
       (el as any).style.pointerEvents = "stroke";
       (el as any).style.cursor = "pointer";
 
+      // meta
       try {
         const bb = (el as any).getBBox?.();
         if (bb && isFinite(bb.x) && isFinite(bb.y)) {
-          segMeta.push({ segKey: key, cx: bb.x + bb.width / 2, cy: bb.y + bb.height / 2, stroke: getStroke(el) || "" });
+          segMeta.push({
+            segKey: key,
+            cx: bb.x + bb.width / 2,
+            cy: bb.y + bb.height / 2,
+            stroke: getStroke(el) || "",
+          });
         }
       } catch {}
     }
 
+    // 采集剩余 text（如果你以后想做英文标注）
     try {
-      const texts = Array.from(svg.querySelectorAll<SVGTextElement>("text"));
-      for (const t of texts) {
+      const remainTexts = Array.from(svg.querySelectorAll<SVGTextElement>("text"));
+      for (const t of remainTexts) {
         const txt = (t.textContent || "").trim();
         if (!txt) continue;
         const bb = (t as any).getBBox?.();
@@ -210,6 +232,7 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
     return () => svg.removeEventListener("click", onClick);
   }, [raw, onPickSeg, onMeta]);
 
+  // 动画高亮逻辑
   useEffect(() => {
     const host = hostRef.current;
     const svg = host?.querySelector("svg") as SVGSVGElement | null;
@@ -243,6 +266,7 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
           <div style={{ fontSize: 13, lineHeight: 1.6 }}>{err}</div>
         </div>
       ) : null}
+
       <div ref={hostRef} style={{ border: "1px solid #eee", borderRadius: 12, overflow: "hidden", maxWidth: "100%" }} />
     </div>
   );
