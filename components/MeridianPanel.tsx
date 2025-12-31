@@ -12,15 +12,15 @@ const EXTRA: ExtraId[] = ["REN","DU","CHONG","DAI","YINWEI","YANGWEI","YINQIAO",
 function isTwelveMode(svgPath: string): boolean {
   return svgPath.includes("12meridians12shichen");
 }
-function reverseLookup(map: Record<string, string[]>, segKey: string): string | null {
-  for (const [k, arr] of Object.entries(map)) if (arr.includes(segKey)) return k;
-  return null;
+function storageKey(svgPath: string) {
+  return `tcm_meridian_map::${svgPath}`;
 }
 function exportJson(obj: MapShape) {
   return JSON.stringify(obj, null, 2);
 }
-function storageKey(svgPath: string) {
-  return `tcm_meridian_map::${svgPath}`;
+function reverseLookup(map: Record<string, string[]>, segKey: string): string | null {
+  for (const [k, arr] of Object.entries(map)) if (arr.includes(segKey)) return k;
+  return null;
 }
 function normColor(c: string) {
   return (c || "").trim().toLowerCase();
@@ -28,33 +28,40 @@ function normColor(c: string) {
 
 export default function MeridianPanel({ svgPath }: { svgPath: string }) {
   const mode: Mode = isTwelveMode(svgPath) ? "twelve" : "extra";
+  const ids = mode === "twelve" ? TWELVE : EXTRA;
 
   const [admin, setAdmin] = useState(false);
   const [selectedTwelve, setSelectedTwelve] = useState<TwelveId>("LU");
   const [selectedExtra, setSelectedExtra] = useState<ExtraId>("REN");
+  const currentId = mode === "twelve" ? selectedTwelve : selectedExtra;
 
   const [draftMap, setDraftMap] = useState<MapShape>(MERIDIAN_MAP);
   const [meta, setMeta] = useState<SvgMeta | null>(null);
 
-  const currentId = mode === "twelve" ? selectedTwelve : selectedExtra;
-  const ids = mode === "twelve" ? TWELVE : EXTRA;
+  // ✅ 关键修复：读本地映射完成之前，不允许写回（避免“重置不了/改不了”）
+  const [loaded, setLoaded] = useState(false);
 
-  // 读/写 localStorage：保证 mapper/view/quiz 同步
+  // 1) 先读 localStorage（只做一次，读完标记 loaded）
   useEffect(() => {
     try {
       const raw = localStorage.getItem(storageKey(svgPath));
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (parsed?.twelve && parsed?.extra) setDraftMap(parsed);
+        if (parsed?.twelve && parsed?.extra) {
+          setDraftMap(parsed);
+        }
       }
     } catch {}
+    setLoaded(true);
   }, [svgPath]);
 
+  // 2) 读完之后才自动保存
   useEffect(() => {
+    if (!loaded) return;
     try {
       localStorage.setItem(storageKey(svgPath), JSON.stringify(draftMap));
     } catch {}
-  }, [draftMap, svgPath]);
+  }, [draftMap, svgPath, loaded]);
 
   const activeSegKeys = useMemo(() => {
     return mode === "twelve"
@@ -63,6 +70,7 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
   }, [draftMap, mode, selectedTwelve, selectedExtra]);
 
   const onPickSeg = ({ segKey }: { segKey: string }) => {
+    // ✅ 映射模式：一定是“增删当前桶”，不走 reverseLookup
     if (admin) {
       setDraftMap((prev) => {
         const next: MapShape = JSON.parse(JSON.stringify(prev));
@@ -77,6 +85,7 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
       return;
     }
 
+    // 浏览模式：点线反选按钮
     const mapObj = mode === "twelve" ? draftMap.twelve : draftMap.extra;
     const hit = reverseLookup(mapObj as any, segKey);
     if (hit) {
@@ -85,73 +94,73 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
     }
   };
 
-  // ✅ Auto-map（按 stroke 颜色分组）
+  // ✅ Auto-map：按颜色分组（不会塌成 BL/PC 两桶）
   const autoMapByColor = () => {
     if (mode !== "twelve") {
-      alert("Auto-map（按颜色）只用于 12经这张图。");
+      alert("Auto-map 目前只做 12经这张图。");
       return;
     }
     if (!meta || meta.segments.length === 0) {
-      alert("图还没加载完，等一下再点。");
+      alert("图还没加载完（meta为空），等一下再点。");
       return;
     }
 
-    // 1) 颜色 -> segKeys
     const colorBuckets = new Map<string, string[]>();
     for (const s of meta.segments) {
-      const c = normColor(s.stroke);
+      const c = normColor((s as any).stroke || "");
       if (!c) continue;
       const arr = colorBuckets.get(c) || [];
       arr.push(s.segKey);
       colorBuckets.set(c, arr);
     }
 
-    // 2) 取最大的 12 个颜色桶（通常正好是 12 条经的颜色）
     const top = Array.from(colorBuckets.entries())
       .map(([color, segKeys]) => ({ color, segKeys, n: segKeys.length }))
       .sort((a, b) => b.n - a.n)
       .slice(0, 12);
 
     if (top.length < 8) {
-      alert(`颜色桶太少（${top.length}），这张 SVG 的经络可能不是按颜色区分。`);
+      alert(`颜色桶太少（${top.length}），这张 SVG 可能不是按颜色区分经络。`);
       return;
     }
 
-    // 3) 给每个颜色桶算一个中心点（用第一段 bbox center 的平均：近似够用）
-    const segPos = new Map(meta.segments.map((s) => [s.segKey, s]));
+    // 给每个颜色桶算一个中心点（近似）
+    const segPos = new Map(meta.segments.map((s: any) => [s.segKey, s]));
     const groups = top.map((g) => {
       let sx = 0, sy = 0, cnt = 0;
       for (const k of g.segKeys) {
-        const p = segPos.get(k);
+        const p: any = segPos.get(k);
         if (!p) continue;
         sx += p.cx; sy += p.cy; cnt++;
       }
-      const cx = cnt ? sx / cnt : 0;
-      const cy = cnt ? sy / cnt : 0;
-      return { ...g, cx, cy };
+      return { ...g, cx: cnt ? sx / cnt : 0, cy: cnt ? sy / cnt : 0 };
     });
 
-    // 4) 这里必须给出“自动对应 12 经”的规则。
-    //    我先给你一个稳定初稿：按 (cx, cy) 排序，分成左/右两组各6，再各自按 cy 排。
-    //    这不会再塌成 BL/PC 两桶，至少会得到 12 桶可用初稿，你再微调。
-    const sorted = groups.sort((a, b) => a.cx - b.cx);
+    // 稳定分配：按 cx 左右分 6+6，再各自按 cy 排
+    const sorted = groups.slice().sort((a, b) => a.cx - b.cx);
     const left = sorted.slice(0, 6).sort((a, b) => a.cy - b.cy);
     const right = sorted.slice(6, 12).sort((a, b) => a.cy - b.cy);
-
-    // 5) 给 12 经一个默认顺序（你后面可以调整顺序，但不会再全进 BL/PC）
-    const order: TwelveId[] = ["LU","LI","ST","SP","HT","SI","BL","KI","PC","SJ","GB","LR"];
     const merged = [...left, ...right];
 
     setDraftMap((prev) => {
       const next: MapShape = JSON.parse(JSON.stringify(prev));
       for (const id of TWELVE) next.twelve[id] = [];
       for (let i = 0; i < Math.min(12, merged.length); i++) {
-        next.twelve[order[i]] = merged[i].segKeys.slice();
+        next.twelve[TWELVE[i]] = merged[i].segKeys.slice();
       }
       return next;
     });
 
-    alert("已按颜色生成 12 组初稿。现在逐个点 LU/LI/ST… 检查，错的线段进映射模式手工修。");
+    alert("已按颜色生成 12 组初稿。现在进映射模式逐个按钮检查，错的线段手工点掉/补上。");
+  };
+
+  const hardReset = () => {
+    // ✅ 一刀切：清空本 SVG 的本地映射 + 回到默认
+    try {
+      localStorage.removeItem(storageKey(svgPath));
+    } catch {}
+    setDraftMap(MERIDIAN_MAP);
+    alert("已清空本 SVG 的本地映射（localStorage）。");
   };
 
   return (
@@ -162,8 +171,8 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
             <div style={{ fontWeight: 900, fontSize: 16 }}>
               {mode === "twelve" ? "12经络" : "任督 + 奇经八脉"}
             </div>
-            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.7, lineHeight: 1.5 }}>
-              关键：三个页面必须用同一个 <code>svgPath</code>，否则映射对不上。
+            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.7 }}>
+              loaded: <b>{String(loaded)}</b>（读完本地映射后才会自动保存，避免覆盖/锁死）
             </div>
           </div>
 
@@ -183,28 +192,26 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
           </button>
         </div>
 
-        {admin && mode === "twelve" ? (
+        {admin ? (
           <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button
-              onClick={autoMapByColor}
-              style={{
-                cursor: "pointer",
-                padding: "10px 12px",
-                borderRadius: 10,
-                border: "1px solid #ddd",
-                background: "#fafafa",
-                fontWeight: 900,
-              }}
-            >
-              Auto-map（按颜色，12组）
-            </button>
+            {mode === "twelve" ? (
+              <button
+                onClick={autoMapByColor}
+                style={{
+                  cursor: "pointer",
+                  padding: "10px 12px",
+                  borderRadius: 10,
+                  border: "1px solid #ddd",
+                  background: "#fafafa",
+                  fontWeight: 900,
+                }}
+              >
+                Auto-map（按颜色，12组）
+              </button>
+            ) : null}
 
             <button
-              onClick={() => {
-                if (!confirm("确认清空本 SVG 的本地映射？（会把 BL/PC 那种错误映射清掉）")) return;
-                localStorage.removeItem(storageKey(svgPath));
-                setDraftMap(MERIDIAN_MAP);
-              }}
+              onClick={hardReset}
               style={{
                 cursor: "pointer",
                 padding: "10px 12px",
@@ -214,7 +221,7 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
                 fontWeight: 900,
               }}
             >
-              清空本 SVG 映射
+              强制重置（清空本地映射）
             </button>
           </div>
         ) : null}
@@ -243,8 +250,7 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
         </div>
 
         <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
-          当前选中：<code>{currentId}</code>，线段数：<b>{activeSegKeys.length}</b>，
-          可点线段总数：<b>{meta?.segments?.length ?? "?"}</b>
+          当前选中：<code>{currentId}</code>，线段数：<b>{activeSegKeys.length}</b>，可点线段总数：<b>{meta?.segments?.length ?? "?"}</b>
         </div>
 
         {admin ? (
