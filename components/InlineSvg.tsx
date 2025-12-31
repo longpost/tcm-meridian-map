@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 export type PickSeg = { segKey: string };
+
 export type SvgMeta = {
   segments: Array<{ segKey: string; cx: number; cy: number }>;
   labels: Array<{ text: string; cx: number; cy: number }>;
@@ -13,6 +14,8 @@ type Props = {
   activeSegKeys: string[];
   draftSegKeys?: string[];
   onPickSeg?: (pick: PickSeg) => void;
+
+  // ✅ 给 MeridianPanel 做 auto-map 用
   onMeta?: (meta: SvgMeta) => void;
 };
 
@@ -74,8 +77,9 @@ function looksMeridianSegment(el: SVGElement): boolean {
   const fill = (el.getAttribute("fill") || "").trim().toLowerCase();
   if (fill && fill !== "none" && fill !== "transparent") return false;
 
+  // 你当前这张非-clickable svg 能点能流动，说明这个阈值是对的
   const sw = getStrokeWidth(el);
-  if (sw <= 0 || sw > 1.4) return false;
+  if (sw <= 0 || sw > 1.6) return false;
 
   try {
     const anyEl = el as any;
@@ -153,19 +157,16 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
     const host = hostRef.current;
     if (!host) return;
 
-    // ✅ 关键：host 绝对不允许溢出覆盖右侧按钮
     host.innerHTML = raw || "";
     const svg = host.querySelector("svg") as SVGSVGElement | null;
     if (!svg) return;
 
-    // ✅ 关键：强制 SVG 缩放到容器宽度内（否则会盖住右侧按钮）
-    // 1) 尽量确保有 viewBox
+    // 让 svg 自适应，不溢出
     if (!svg.getAttribute("viewBox")) {
       const w = parseFloat(svg.getAttribute("width") || "") || 0;
       const h = parseFloat(svg.getAttribute("height") || "") || 0;
       if (w > 0 && h > 0) svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
     }
-    // 2) 让它响应式
     svg.setAttribute("width", "100%");
     svg.removeAttribute("height");
     (svg.style as any).width = "100%";
@@ -173,10 +174,10 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
     (svg.style as any).display = "block";
     (svg.style as any).maxWidth = "100%";
 
-    // ✅ 默认：SVG 内全部不可点（不会点到轮廓/黑灰线/文字）
+    // 默认全不可点
     svg.querySelectorAll<SVGElement>("*").forEach((n) => ((n as any).style.pointerEvents = "none"));
 
-    // ✅ 只挑彩色细线段做可点 segment
+    // 只挑彩色细线段
     const candidates = Array.from(svg.querySelectorAll<SVGElement>(SHAPE_SELECTOR)).filter(looksMeridianSegment);
 
     const segMeta: SvgMeta["segments"] = [];
@@ -195,6 +196,7 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
       } catch {}
     }
 
+    // 采集 text 标签中心点（用于 auto-map）
     const labels: SvgMeta["labels"] = [];
     const texts = Array.from(svg.querySelectorAll<SVGTextElement>("text"));
     for (const t of texts) {
@@ -229,9 +231,7 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
 
     const segs = Array.from(svg.querySelectorAll<SVGElement>(".m-seg"));
     segs.forEach((el) => {
-      el.classList.remove("seg-active");
-      el.classList.remove("seg-dim");
-      el.classList.remove("seg-draft");
+      el.classList.remove("seg-active", "seg-dim", "seg-draft");
     });
 
     if (activeSet.size === 0 && draftSet.size === 0) return;
@@ -260,7 +260,6 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
         </div>
       ) : null}
 
-      {/* ✅ 关键：overflow hidden + maxWidth 让 SVG 永远别盖住右侧按钮 */}
       <div
         ref={hostRef}
         style={{
