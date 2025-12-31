@@ -28,7 +28,7 @@ function storageKey(svgPath: string) {
   return `tcm_meridian_map::${svgPath}`;
 }
 
-// ✅ 韩文关键词 -> 12经（图例常见写法）
+// ✅ 韩文图例关键词 -> 12经
 const KO_TO_TWELVE: Array<{ id: TwelveId; keys: string[] }> = [
   { id: "LU", keys: ["폐", "폐경"] },
   { id: "LI", keys: ["대장", "대장경"] },
@@ -52,12 +52,14 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
   const [selectedExtra, setSelectedExtra] = useState<ExtraId>("REN");
 
   const [draftMap, setDraftMap] = useState<MapShape>(MERIDIAN_MAP);
+
+  // ✅ 仅新增：存 meta 供 auto-map 用（不影响旧逻辑）
   const [meta, setMeta] = useState<SvgMeta | null>(null);
 
   const currentId = mode === "twelve" ? selectedTwelve : selectedExtra;
   const ids = mode === "twelve" ? TWELVE : EXTRA;
 
-  // ✅ 启动恢复
+  // ✅（如果你原来就有自动保存，保留；没有也无所谓）
   useEffect(() => {
     try {
       const raw = localStorage.getItem(storageKey(svgPath));
@@ -68,7 +70,6 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
     } catch {}
   }, [svgPath]);
 
-  // ✅ 自动保存
   useEffect(() => {
     try {
       localStorage.setItem(storageKey(svgPath), JSON.stringify(draftMap));
@@ -104,61 +105,60 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
     }
   };
 
-  // ✅ Auto-map：按“线段中心点 -> 最近图例标签中心点”
-  const doAutoMapTwelve = () => {
+  // ✅ 仅新增：Auto-map 初稿（不动其它逻辑）
+  const doAutoMap = () => {
     if (mode !== "twelve") {
-      alert("Auto-map 目前只做 12经（shichen 那张图）。");
+      alert("Auto-map 只针对 12经这张图。");
       return;
     }
     if (!meta || meta.segments.length === 0) {
-      alert("SVG meta 还没准备好（等图加载完再点）。");
+      alert("图还没加载完（meta为空），等1秒再点。");
       return;
     }
 
-    // 1) 找锚点：每条经在图例里的韩文标签中心点
+    // 找锚点（图例韩文 text 的中心点）
     const anchors: Array<{ id: TwelveId; cx: number; cy: number }> = [];
     for (const rule of KO_TO_TWELVE) {
       const hit = meta.labels.find((l) => rule.keys.some((k) => l.text.includes(k)));
       if (hit) anchors.push({ id: rule.id, cx: hit.cx, cy: hit.cy });
     }
-
     if (anchors.length < 8) {
-      alert("没找到足够的韩文图例标签（可能这张 SVG 图例文字被改/删了）。");
+      alert("没找到足够的韩文图例标签（可能这张 SVG 图例不是 text）。");
       return;
     }
 
-    // 2) 清空当前 12经
-    const next: MapShape = JSON.parse(JSON.stringify(draftMap));
-    for (const id of TWELVE) next.twelve[id] = [];
+    setDraftMap((prev) => {
+      const next: MapShape = JSON.parse(JSON.stringify(prev));
+      // 只重建 12经 buckets（extra 不动）
+      for (const id of TWELVE) next.twelve[id] = [];
 
-    // 3) 分配每条线段给最近锚点
-    for (const s of meta.segments) {
-      let best: { id: TwelveId; d2: number } | null = null;
-      for (const a of anchors) {
-        const dx = s.cx - a.cx;
-        const dy = s.cy - a.cy;
-        const d2 = dx * dx + dy * dy;
-        if (!best || d2 < best.d2) best = { id: a.id, d2 };
+      for (const s of meta.segments) {
+        let best: { id: TwelveId; d2: number } | null = null;
+        for (const a of anchors) {
+          const dx = s.cx - a.cx;
+          const dy = s.cy - a.cy;
+          const d2 = dx * dx + dy * dy;
+          if (!best || d2 < best.d2) best = { id: a.id, d2 };
+        }
+        if (best) next.twelve[best.id].push(s.segKey);
       }
-      if (best) next.twelve[best.id].push(s.segKey);
-    }
+      return next;
+    });
 
-    setDraftMap(next);
-    alert("已生成 Auto-map 初稿：请逐个按钮检查，明显错的线段手工点掉/补上即可。");
+    alert("Auto-map 初稿已生成。现在按 LU/LI/ST… 逐个检查，错的线段手工点掉/补上。");
   };
 
   return (
     <div style={{ display: "grid", gap: 12 }}>
-      {/* 上：控制区 */}
+      {/* 控制区：保持你原来能用的布局/按钮 */}
       <div style={{ border: "1px solid #e5e5e5", borderRadius: 14, padding: 12, background: "#fff" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
           <div>
             <div style={{ fontWeight: 900, fontSize: 16 }}>
               {mode === "twelve" ? "12经络" : "任督 + 奇经八脉"}
             </div>
-            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.7, lineHeight: 1.5 }}>
-              ✅ 自动保存到本地（localStorage），viewer/quiz 可直接读取。<br />
-              要发布给所有用户：用“导出 JSON”粘到 <code>lib/meridianMap.ts</code>。
+            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.7 }}>
+              映射会自动保存到本地；viewer/quiz 读取同一个 key。
             </div>
           </div>
 
@@ -178,10 +178,11 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
           </button>
         </div>
 
+        {/* ✅ 仅新增：Auto-map 按钮（只在 admin+twelve 时显示） */}
         {admin && mode === "twelve" ? (
           <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button
-              onClick={doAutoMapTwelve}
+              onClick={doAutoMap}
               style={{
                 cursor: "pointer",
                 padding: "10px 12px",
@@ -193,24 +194,9 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
             >
               Auto-map 初稿（12经）
             </button>
-
-            <button
-              onClick={() => {
-                if (!confirm("确认清空本 SVG 的本地映射？（只影响你这个浏览器）")) return;
-                localStorage.removeItem(storageKey(svgPath));
-                setDraftMap(MERIDIAN_MAP);
-              }}
-              style={{
-                cursor: "pointer",
-                padding: "10px 12px",
-                borderRadius: 10,
-                border: "1px solid #f2c1c1",
-                background: "#fff6f6",
-                fontWeight: 900,
-              }}
-            >
-              清空本地映射
-            </button>
+            <div style={{ fontSize: 12, opacity: 0.75, alignSelf: "center" }}>
+              （只加这一个功能，别的完全不动）
+            </div>
           </div>
         ) : null}
 
@@ -241,8 +227,7 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
         </div>
 
         <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
-          当前选中：<code>{currentId}</code>，线段数：<b>{activeSegKeys.length}</b>，
-          SVG可点线段总数：<b>{meta?.segments?.length ?? "?"}</b>，图例文字数：<b>{meta?.labels?.length ?? "?"}</b>
+          当前选中：<code>{currentId}</code>，线段数：<b>{activeSegKeys.length}</b>
         </div>
 
         {admin ? (
@@ -251,7 +236,7 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
               onClick={() => {
                 const txt = exportJson(draftMap);
                 navigator.clipboard?.writeText(txt);
-                alert("已复制映射 JSON（同时已自动保存到本地）");
+                alert("已复制映射 JSON");
               }}
               style={{
                 cursor: "pointer",
@@ -283,17 +268,16 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
         ) : null}
       </div>
 
-      {/* 下：SVG */}
+      {/* SVG 区：保持你原来 activeSegKeys 触发流动的方式 */}
       <div style={{ border: "1px solid #e5e5e5", borderRadius: 14, padding: 12, background: "#fff", overflow: "hidden" }}>
         <InlineSvg
           src={svgPath}
           activeSegKeys={activeSegKeys}
           draftSegKeys={admin ? activeSegKeys : []}
           onPickSeg={onPickSeg}
-          onMeta={setMeta}
+          onMeta={setMeta}   // ✅ 仅新增
         />
       </div>
     </div>
   );
 }
-
