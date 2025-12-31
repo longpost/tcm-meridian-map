@@ -5,7 +5,7 @@ import MeridianPanel from "../../components/MeridianPanel";
 
 export default function MapperPage() {
   // 你也可以在 mapper 页做两张图的切换
-  const svgPath = "/assets/12meridians12shichen_clickable.svg";
+  const svgPath = "/assets/12meridians12shichen.svg";
 
   return (
     <main style={{ maxWidth: 1240, margin: "0 auto", padding: 18 }}>
