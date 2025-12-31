@@ -1,58 +1,31 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
-import MeridianPanel from "../components/MeridianPanel";
-
-type Mode = "twelve" | "extra";
+import React from "react";
 
 export default function Page() {
-  const [mode, setMode] = useState<Mode>("twelve");
-
-  const svgPath = useMemo(() => {
-    return mode === "twelve"
-      ? "/assets/12meridians12shichen_clickable.svg"
-      : "/assets/12meridians8extra_CVGV_clickable.svg";
-  }, [mode]);
-
   return (
-    <main style={{ maxWidth: 1200, margin: "0 auto", padding: 20 }}>
-      <h1 style={{ fontSize: 22, fontWeight: 900, marginBottom: 10 }}>
-        Meridian Map (Demo)
-      </h1>
-
-      <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
-        <button
-          onClick={() => setMode("twelve")}
-          style={{
-            padding: "8px 12px",
-            borderRadius: 10,
-            border: "1px solid #ddd",
-            background: mode === "twelve" ? "#111" : "#fff",
-            color: mode === "twelve" ? "#fff" : "#111",
-            fontWeight: 800,
-            cursor: "pointer",
-          }}
-        >
-          12经（clickable）
-        </button>
-
-        <button
-          onClick={() => setMode("extra")}
-          style={{
-            padding: "8px 12px",
-            borderRadius: 10,
-            border: "1px solid #ddd",
-            background: mode === "extra" ? "#111" : "#fff",
-            color: mode === "extra" ? "#fff" : "#111",
-            fontWeight: 800,
-            cursor: "pointer",
-          }}
-        >
-          任督 + 奇经（clickable）
-        </button>
+    <main style={{ maxWidth: 1000, margin: "0 auto", padding: 20 }}>
+      <h1 style={{ fontSize: 22, fontWeight: 900 }}>Meridian Map</h1>
+      <div style={{ marginTop: 8, fontSize: 13, opacity: 0.75, lineHeight: 1.6 }}>
+        三个页面分开：学习练习（判对错）、科普展示（点经络流动高亮）、管理员映射（维护答案库）。
       </div>
 
-      <MeridianPanel svgPath={svgPath} />
+      <div style={{ marginTop: 16, display: "grid", gap: 10 }}>
+        <a href="/viewer" style={linkStyle}>① Viewer（点经络 → 流动高亮）</a>
+        <a href="/quiz" style={linkStyle}>② Quiz（练习：点对指定经络）</a>
+        <a href="/mapper" style={linkStyle}>③ Mapper（管理员：维护/导出映射）</a>
+      </div>
     </main>
   );
 }
+
+const linkStyle: React.CSSProperties = {
+  display: "block",
+  padding: "12px 14px",
+  borderRadius: 12,
+  border: "1px solid #ddd",
+  background: "#fafafa",
+  fontWeight: 900,
+  textDecoration: "none",
+  color: "#111",
+};
