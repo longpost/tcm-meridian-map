@@ -7,7 +7,7 @@ import { MERIDIAN_MAP, type TwelveId } from "../../lib/meridianMap";
 const TWELVE: TwelveId[] = ["LU","LI","ST","SP","HT","SI","BL","KI","PC","SJ","GB","LR"];
 
 export default function QuizPage() {
-  const svgPath = "/assets/12meridians12shichen.svg";
+  const svgPath = "/assets/12meridians12shichen_clickable.svg";
 
   const [target, setTarget] = useState<TwelveId>(() => pickRandom(TWELVE));
   const [last, setLast] = useState<{ picked: string; correct: boolean } | null>(null);
