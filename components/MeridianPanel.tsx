@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import InlineSvg from "./InlineSvg";
 import { MERIDIAN_MAP, type TwelveId, type ExtraId, type MapShape } from "../lib/meridianMap";
 
@@ -24,15 +24,39 @@ function exportJson(obj: MapShape) {
   return JSON.stringify(obj, null, 2);
 }
 
+function storageKey(svgPath: string) {
+  return `tcm_meridian_map::${svgPath}`;
+}
+
 export default function MeridianPanel({ svgPath }: { svgPath: string }) {
   const mode: Mode = isTwelveMode(svgPath) ? "twelve" : "extra";
 
   const [admin, setAdmin] = useState(false);
   const [selectedTwelve, setSelectedTwelve] = useState<TwelveId>("LU");
   const [selectedExtra, setSelectedExtra] = useState<ExtraId>("REN");
+
   const [draftMap, setDraftMap] = useState<MapShape>(MERIDIAN_MAP);
 
   const currentId = mode === "twelve" ? selectedTwelve : selectedExtra;
+  const ids = mode === "twelve" ? TWELVE : EXTRA;
+
+  // ✅ 启动时：自动从 localStorage 恢复
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(storageKey(svgPath));
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.twelve && parsed?.extra) setDraftMap(parsed);
+      }
+    } catch {}
+  }, [svgPath]);
+
+  // ✅ 每次映射变化：自动保存到 localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(storageKey(svgPath), JSON.stringify(draftMap));
+    } catch {}
+  }, [draftMap, svgPath]);
 
   const activeSegKeys = useMemo(() => {
     return mode === "twelve"
@@ -42,7 +66,6 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
 
   const onPickSeg = ({ segKey }: { segKey: string }) => {
     if (admin) {
-      // 映射模式：点一下加入/再点一下移除
       setDraftMap((prev) => {
         const next: MapShape = JSON.parse(JSON.stringify(prev));
         const bucket = mode === "twelve"
@@ -56,7 +79,6 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
       return;
     }
 
-    // 正常模式：点线段反查属于哪个经
     const mapObj = mode === "twelve" ? draftMap.twelve : draftMap.extra;
     const hit = reverseLookup(mapObj as any, segKey);
     if (hit) {
@@ -65,63 +87,19 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
     }
   };
 
-  const ids = mode === "twelve" ? TWELVE : EXTRA;
-
   return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "minmax(0, 1fr) 380px",
-        gap: 16,
-        alignItems: "start",
-      }}
-    >
-      {/* LEFT: SVG 区域 — 强制不允许溢出覆盖右侧 */}
-      <div
-        style={{
-          border: "1px solid #e5e5e5",
-          borderRadius: 14,
-          padding: 12,
-          background: "#fff",
-          overflow: "hidden",
-          maxWidth: "100%",
-          position: "relative",
-          zIndex: 0,            // ✅ 低层
-          pointerEvents: "auto",
-        }}
-      >
-        <InlineSvg
-          src={svgPath}
-          activeSegKeys={activeSegKeys}
-          draftSegKeys={admin ? activeSegKeys : []}
-          onPickSeg={onPickSeg}
-        />
-        <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
-          {admin
-            ? "【映射模式】点线段：加入/移除当前经络。完成后导出 JSON 固化到 lib/meridianMap.ts。"
-            : "点线段会反选右侧按钮（前提：该线段已映射）。"}
-        </div>
-      </div>
-
-      {/* RIGHT: 控制面板 — 强制最上层 + 强制可点 */}
-      <div
-        style={{
-          border: "1px solid #e5e5e5",
-          borderRadius: 14,
-          padding: 12,
-          background: "#fff",
-          position: "relative",
-          zIndex: 9999,          // ✅ 最高层，压过任何 SVG/透明层
-          pointerEvents: "auto",  // ✅ 强制可点
-        }}
-      >
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+    <div style={{ display: "grid", gap: 12 }}>
+      {/* 上：控制区（按钮一定能点） */}
+      <div style={{ border: "1px solid #e5e5e5", borderRadius: 14, padding: 12, background: "#fff" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
           <div>
             <div style={{ fontWeight: 900, fontSize: 16 }}>
               {mode === "twelve" ? "12经络" : "任督 + 奇经八脉"}
             </div>
-            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.7 }}>
-              （如果按钮点不动，说明曾经被 SVG 盖住；本版已强制修复）
+            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.7, lineHeight: 1.5 }}>
+              ✅ 映射会自动保存到浏览器本地（localStorage），viewer/quiz 会自动读取。
+              <br />
+              要发布给所有用户：用“导出 JSON”粘到 <code>lib/meridianMap.ts</code>。
             </div>
           </div>
 
@@ -141,23 +119,7 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
           </button>
         </div>
 
-        {/* ✅ Debug按钮：用来确认右侧点击确实恢复 */}
-        <button
-          onClick={() => alert("右侧按钮点击OK")}
-          style={{
-            marginTop: 10,
-            cursor: "pointer",
-            padding: "8px 10px",
-            borderRadius: 10,
-            border: "1px solid #ddd",
-            background: "#fafafa",
-            fontWeight: 900,
-          }}
-        >
-          点我测试右侧点击
-        </button>
-
-        <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: mode === "twelve" ? "repeat(4, 1fr)" : "repeat(2, 1fr)", gap: 8 }}>
+        <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: mode === "twelve" ? "repeat(6, 1fr)" : "repeat(4, 1fr)", gap: 8 }}>
           {ids.map((id) => {
             const on = currentId === id;
             return (
@@ -183,53 +145,75 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
           })}
         </div>
 
-        <div style={{ marginTop: 14, borderTop: "1px dashed #eee", paddingTop: 12 }}>
-          <div style={{ fontWeight: 900, marginBottom: 6 }}>当前选中</div>
-          <div><code>{currentId}</code></div>
-
-          <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75, lineHeight: 1.6 }}>
-            线段数：<b>{activeSegKeys.length}</b>
-            <br />
-            admin：<b>{String(admin)}</b>
-          </div>
-
-          {admin ? (
-            <div style={{ marginTop: 12 }}>
-              <button
-                onClick={() => {
-                  const txt = exportJson(draftMap);
-                  navigator.clipboard?.writeText(txt);
-                  alert("已复制映射 JSON（也会显示在下方文本框）");
-                }}
-                style={{
-                  cursor: "pointer",
-                  padding: "10px 12px",
-                  borderRadius: 10,
-                  border: "1px solid #ddd",
-                  background: "#fafafa",
-                  fontWeight: 900,
-                }}
-              >
-                导出映射（复制到剪贴板）
-              </button>
-
-              <textarea
-                readOnly
-                value={exportJson(draftMap)}
-                style={{
-                  marginTop: 8,
-                  width: "100%",
-                  height: 200,
-                  borderRadius: 12,
-                  border: "1px solid #ddd",
-                  padding: 10,
-                  fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-                  fontSize: 12,
-                }}
-              />
-            </div>
-          ) : null}
+        <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
+          当前选中：<code>{currentId}</code>，线段数：<b>{activeSegKeys.length}</b>，admin：<b>{String(admin)}</b>
         </div>
+
+        {admin ? (
+          <div style={{ marginTop: 12 }}>
+            <button
+              onClick={() => {
+                const txt = exportJson(draftMap);
+                navigator.clipboard?.writeText(txt);
+                alert("已复制映射 JSON（同时已自动保存到本地）");
+              }}
+              style={{
+                cursor: "pointer",
+                padding: "10px 12px",
+                borderRadius: 10,
+                border: "1px solid #ddd",
+                background: "#fafafa",
+                fontWeight: 900,
+              }}
+            >
+              导出映射（复制到剪贴板）
+            </button>
+
+            <button
+              onClick={() => {
+                if (!confirm("确认清空本 SVG 的本地映射？（只影响你这个浏览器）")) return;
+                localStorage.removeItem(storageKey(svgPath));
+                setDraftMap(MERIDIAN_MAP);
+              }}
+              style={{
+                marginLeft: 8,
+                cursor: "pointer",
+                padding: "10px 12px",
+                borderRadius: 10,
+                border: "1px solid #f2c1c1",
+                background: "#fff6f6",
+                fontWeight: 900,
+              }}
+            >
+              清空本地映射
+            </button>
+
+            <textarea
+              readOnly
+              value={exportJson(draftMap)}
+              style={{
+                marginTop: 8,
+                width: "100%",
+                height: 220,
+                borderRadius: 12,
+                border: "1px solid #ddd",
+                padding: 10,
+                fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                fontSize: 12,
+              }}
+            />
+          </div>
+        ) : null}
+      </div>
+
+      {/* 下：SVG 区 */}
+      <div style={{ border: "1px solid #e5e5e5", borderRadius: 14, padding: 12, background: "#fff", overflow: "hidden" }}>
+        <InlineSvg
+          src={svgPath}
+          activeSegKeys={activeSegKeys}
+          draftSegKeys={admin ? activeSegKeys : []}
+          onPickSeg={onPickSeg}
+        />
       </div>
     </div>
   );
