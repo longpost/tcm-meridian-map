@@ -4,9 +4,8 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 
 export type PickSeg = { segKey: string };
 
-// ✅ 仅新增：给 auto-map 用
 export type SvgMeta = {
-  segments: Array<{ segKey: string; cx: number; cy: number }>;
+  segments: Array<{ segKey: string; cx: number; cy: number; stroke: string }>;
   labels: Array<{ text: string; cx: number; cy: number }>;
 };
 
@@ -15,9 +14,7 @@ type Props = {
   activeSegKeys: string[];
   draftSegKeys?: string[];
   onPickSeg?: (pick: PickSeg) => void;
-
-  // ✅ 仅新增：不传也完全不影响旧行为
-  onMeta?: (meta: SvgMeta) => void;
+  onMeta?: (meta: SvgMeta) => void; // ✅ 仅新增
 };
 
 const SHAPE_SELECTOR = "path, polyline, line";
@@ -73,7 +70,6 @@ function looksMeridianSegment(el: SVGElement): boolean {
   const fill = (el.getAttribute("fill") || "").trim().toLowerCase();
   if (fill && fill !== "none" && fill !== "transparent") return false;
 
-  // ⚠️ 这里保持你原来能跑的阈值（别乱改）
   const sw = getStrokeWidth(el);
   if (sw <= 0 || sw > 1.6) return false;
 
@@ -142,14 +138,11 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
         setErr(`SVG 读取异常：${String(e?.message || e)}（${src}）`);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [src]);
 
   useEffect(() => {
     ensureStyleOnce();
-
     const host = hostRef.current;
     if (!host) return;
 
@@ -157,7 +150,6 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
     const svg = host.querySelector("svg") as SVGSVGElement | null;
     if (!svg) return;
 
-    // ✅ 保持你原来能显示/可点的：自适应 + 不溢出
     if (!svg.getAttribute("viewBox")) {
       const w = parseFloat(svg.getAttribute("width") || "") || 0;
       const h = parseFloat(svg.getAttribute("height") || "") || 0;
@@ -170,13 +162,10 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
     (svg.style as any).display = "block";
     (svg.style as any).maxWidth = "100%";
 
-    // ✅ 默认全不可点
     svg.querySelectorAll<SVGElement>("*").forEach((n) => ((n as any).style.pointerEvents = "none"));
 
-    // ✅ 只挑彩色细线段
     const candidates = Array.from(svg.querySelectorAll<SVGElement>(SHAPE_SELECTOR)).filter(looksMeridianSegment);
 
-    // ✅ 仅新增：收集 meta
     const segMeta: SvgMeta["segments"] = [];
     const labels: SvgMeta["labels"] = [];
 
@@ -187,16 +176,14 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
       (el as any).style.pointerEvents = "stroke";
       (el as any).style.cursor = "pointer";
 
-      // meta: 线段中心点
       try {
         const bb = (el as any).getBBox?.();
         if (bb && isFinite(bb.x) && isFinite(bb.y)) {
-          segMeta.push({ segKey: key, cx: bb.x + bb.width / 2, cy: bb.y + bb.height / 2 });
+          segMeta.push({ segKey: key, cx: bb.x + bb.width / 2, cy: bb.y + bb.height / 2, stroke: getStroke(el) || "" });
         }
       } catch {}
     }
 
-    // meta: text 标签中心点（图例韩文）
     try {
       const texts = Array.from(svg.querySelectorAll<SVGTextElement>("text"));
       for (const t of texts) {
@@ -209,7 +196,6 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
       }
     } catch {}
 
-    // ✅ 仅新增：回传 meta（不影响旧功能）
     onMeta?.({ segments: segMeta, labels });
 
     const onClick = (evt: MouseEvent) => {
@@ -224,16 +210,13 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
     return () => svg.removeEventListener("click", onClick);
   }, [raw, onPickSeg, onMeta]);
 
-  // ✅ 动画高亮逻辑：完全不改
   useEffect(() => {
     const host = hostRef.current;
     const svg = host?.querySelector("svg") as SVGSVGElement | null;
     if (!svg) return;
 
     const segs = Array.from(svg.querySelectorAll<SVGElement>(".m-seg"));
-    segs.forEach((el) => {
-      el.classList.remove("seg-active", "seg-dim", "seg-draft");
-    });
+    segs.forEach((el) => el.classList.remove("seg-active", "seg-dim", "seg-draft"));
 
     if (activeSet.size === 0 && draftSet.size === 0) return;
 
@@ -260,17 +243,7 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
           <div style={{ fontSize: 13, lineHeight: 1.6 }}>{err}</div>
         </div>
       ) : null}
-
-      <div
-        ref={hostRef}
-        style={{
-          border: "1px solid #eee",
-          borderRadius: 12,
-          overflow: "hidden",
-          maxWidth: "100%",
-          position: "relative",
-        }}
-      />
+      <div ref={hostRef} style={{ border: "1px solid #eee", borderRadius: 12, overflow: "hidden", maxWidth: "100%" }} />
     </div>
   );
 }
