@@ -3,7 +3,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 export type PickSeg = { segKey: string };
-
 export type SvgMeta = {
   segments: Array<{ segKey: string; cx: number; cy: number; stroke?: string }>;
   labels: Array<{ text: string; cx: number; cy: number }>;
@@ -14,7 +13,7 @@ type Props = {
   activeSegKeys: string[];
   draftSegKeys?: string[];
   onPickSeg?: (pick: PickSeg) => void;
-  onMeta?: (meta: SvgMeta) => void; // 可选
+  onMeta?: (meta: SvgMeta) => void;
 };
 
 const SHAPE_SELECTOR = "path, polyline, line";
@@ -139,9 +138,7 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
         setErr(`SVG 读取异常：${String(e?.message || e)}（${src}）`);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [src]);
 
   useEffect(() => {
@@ -154,6 +151,7 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
     const svg = host.querySelector("svg") as SVGSVGElement | null;
     if (!svg) return;
 
+    // 适配
     if (!svg.getAttribute("viewBox")) {
       const w = parseFloat(svg.getAttribute("width") || "") || 0;
       const h = parseFloat(svg.getAttribute("height") || "") || 0;
@@ -166,10 +164,10 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
     (svg.style as any).display = "block";
     (svg.style as any).maxWidth = "100%";
 
-    // 默认全不可点
+    // 全部先不可点
     svg.querySelectorAll<SVGElement>("*").forEach((n) => ((n as any).style.pointerEvents = "none"));
 
-    // ✅ 删除所有含韩文的 text（中间那几条图例就没了）
+    // 删除韩文 text
     try {
       const texts = Array.from(svg.querySelectorAll<SVGTextElement>("text"));
       for (const t of texts) {
@@ -178,34 +176,55 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
       }
     } catch {}
 
-    // 只挑彩色线段
     const candidates = Array.from(svg.querySelectorAll<SVGElement>(SHAPE_SELECTOR)).filter(looksMeridianSegment);
 
     const segMeta: SvgMeta["segments"] = [];
     const labels: SvgMeta["labels"] = [];
 
+    // ✅ 直接给每条线制造“透明粗点击层”，并且给点击层直接绑定事件（不搞委托）
+    const cleanupFns: Array<() => void> = [];
+
     for (const el of candidates) {
       const key = domPathKey(el);
+
+      // 原线：只负责视觉/动画
       el.setAttribute("data-segkey", key);
       el.classList.add("m-seg");
-      (el as any).style.pointerEvents = "stroke";
-      (el as any).style.cursor = "pointer";
+      (el as any).style.pointerEvents = "none";
+
+      // 点击层
+      const hit = el.cloneNode(true) as SVGElement;
+      hit.removeAttribute("id");
+      hit.setAttribute("data-segkey", key);
+      hit.setAttribute("stroke", "rgba(0,0,0,0)");
+      hit.setAttribute("fill", "none");
+      const sw = getStrokeWidth(el);
+      const hitWidth = Math.max(10, sw * 8);
+      hit.setAttribute("stroke-width", String(hitWidth));
+      (hit as any).style.pointerEvents = "stroke";
+      (hit as any).style.cursor = "pointer";
+
+      // 插到原线前面，确保命中 hit
+      el.parentNode?.insertBefore(hit, el);
+
+      // click bind（关键）
+      const fn = (evt: Event) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        onPickSeg?.({ segKey: key });
+      };
+      hit.addEventListener("click", fn);
+      cleanupFns.push(() => hit.removeEventListener("click", fn));
 
       // meta
       try {
         const bb = (el as any).getBBox?.();
         if (bb && isFinite(bb.x) && isFinite(bb.y)) {
-          segMeta.push({
-            segKey: key,
-            cx: bb.x + bb.width / 2,
-            cy: bb.y + bb.height / 2,
-            stroke: getStroke(el) || "",
-          });
+          segMeta.push({ segKey: key, cx: bb.x + bb.width / 2, cy: bb.y + bb.height / 2, stroke: getStroke(el) || "" });
         }
       } catch {}
     }
 
-    // 采集剩余 text（如果你以后想做英文标注）
     try {
       const remainTexts = Array.from(svg.querySelectorAll<SVGTextElement>("text"));
       for (const t of remainTexts) {
@@ -220,19 +239,12 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
 
     onMeta?.({ segments: segMeta, labels });
 
-    const onClick = (evt: MouseEvent) => {
-      const target = evt.target as Element | null;
-      const hit = target?.closest(".m-seg") as SVGElement | null;
-      if (!hit) return;
-      const segKey = hit.getAttribute("data-segkey") || domPathKey(hit);
-      onPickSeg?.({ segKey });
+    return () => {
+      cleanupFns.forEach((f) => f());
     };
-
-    svg.addEventListener("click", onClick);
-    return () => svg.removeEventListener("click", onClick);
   }, [raw, onPickSeg, onMeta]);
 
-  // 动画高亮逻辑
+  // 动画高亮：只对 m-seg
   useEffect(() => {
     const host = hostRef.current;
     const svg = host?.querySelector("svg") as SVGSVGElement | null;
