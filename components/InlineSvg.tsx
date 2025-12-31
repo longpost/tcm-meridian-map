@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 
 export type PickSeg = { segKey: string };
 
+// ✅ 仅新增：给 auto-map 用
 export type SvgMeta = {
   segments: Array<{ segKey: string; cx: number; cy: number }>;
   labels: Array<{ text: string; cx: number; cy: number }>;
@@ -15,7 +16,7 @@ type Props = {
   draftSegKeys?: string[];
   onPickSeg?: (pick: PickSeg) => void;
 
-  // ✅ 给 MeridianPanel 做 auto-map 用
+  // ✅ 仅新增：不传也完全不影响旧行为
   onMeta?: (meta: SvgMeta) => void;
 };
 
@@ -24,7 +25,6 @@ const SHAPE_SELECTOR = "path, polyline, line";
 function norm(s: string) {
   return (s || "").trim().toLowerCase().replace(/\s+/g, "");
 }
-
 function getStroke(el: SVGElement) {
   return (
     (el.getAttribute("stroke") ||
@@ -32,7 +32,6 @@ function getStroke(el: SVGElement) {
       "").trim()
   );
 }
-
 function getStrokeWidth(el: SVGElement) {
   const swRaw =
     el.getAttribute("stroke-width") ||
@@ -40,7 +39,6 @@ function getStrokeWidth(el: SVGElement) {
     "";
   return parseFloat(String(swRaw).replace("px", "")) || 0;
 }
-
 function isGrayOrBlack(stroke: string) {
   const s = norm(stroke);
   if (!s) return true;
@@ -52,7 +50,6 @@ function isGrayOrBlack(stroke: string) {
   const minv = Math.min(r, g, b);
   return maxv - minv < 18;
 }
-
 function domPathKey(el: Element): string {
   const parts: string[] = [];
   let cur: Element | null = el;
@@ -65,7 +62,6 @@ function domPathKey(el: Element): string {
   }
   return "p:" + parts.reverse().join("/");
 }
-
 function looksMeridianSegment(el: SVGElement): boolean {
   const tag = el.tagName.toLowerCase();
   if (tag !== "path" && tag !== "polyline" && tag !== "line") return false;
@@ -77,7 +73,7 @@ function looksMeridianSegment(el: SVGElement): boolean {
   const fill = (el.getAttribute("fill") || "").trim().toLowerCase();
   if (fill && fill !== "none" && fill !== "transparent") return false;
 
-  // 你当前这张非-clickable svg 能点能流动，说明这个阈值是对的
+  // ⚠️ 这里保持你原来能跑的阈值（别乱改）
   const sw = getStrokeWidth(el);
   if (sw <= 0 || sw > 1.6) return false;
 
@@ -161,7 +157,7 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
     const svg = host.querySelector("svg") as SVGSVGElement | null;
     if (!svg) return;
 
-    // 让 svg 自适应，不溢出
+    // ✅ 保持你原来能显示/可点的：自适应 + 不溢出
     if (!svg.getAttribute("viewBox")) {
       const w = parseFloat(svg.getAttribute("width") || "") || 0;
       const h = parseFloat(svg.getAttribute("height") || "") || 0;
@@ -174,13 +170,16 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
     (svg.style as any).display = "block";
     (svg.style as any).maxWidth = "100%";
 
-    // 默认全不可点
+    // ✅ 默认全不可点
     svg.querySelectorAll<SVGElement>("*").forEach((n) => ((n as any).style.pointerEvents = "none"));
 
-    // 只挑彩色细线段
+    // ✅ 只挑彩色细线段
     const candidates = Array.from(svg.querySelectorAll<SVGElement>(SHAPE_SELECTOR)).filter(looksMeridianSegment);
 
+    // ✅ 仅新增：收集 meta
     const segMeta: SvgMeta["segments"] = [];
+    const labels: SvgMeta["labels"] = [];
+
     for (const el of candidates) {
       const key = domPathKey(el);
       el.setAttribute("data-segkey", key);
@@ -188,6 +187,7 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
       (el as any).style.pointerEvents = "stroke";
       (el as any).style.cursor = "pointer";
 
+      // meta: 线段中心点
       try {
         const bb = (el as any).getBBox?.();
         if (bb && isFinite(bb.x) && isFinite(bb.y)) {
@@ -196,20 +196,20 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
       } catch {}
     }
 
-    // 采集 text 标签中心点（用于 auto-map）
-    const labels: SvgMeta["labels"] = [];
-    const texts = Array.from(svg.querySelectorAll<SVGTextElement>("text"));
-    for (const t of texts) {
-      const txt = (t.textContent || "").trim();
-      if (!txt) continue;
-      try {
+    // meta: text 标签中心点（图例韩文）
+    try {
+      const texts = Array.from(svg.querySelectorAll<SVGTextElement>("text"));
+      for (const t of texts) {
+        const txt = (t.textContent || "").trim();
+        if (!txt) continue;
         const bb = (t as any).getBBox?.();
         if (bb && isFinite(bb.x) && isFinite(bb.y)) {
           labels.push({ text: txt, cx: bb.x + bb.width / 2, cy: bb.y + bb.height / 2 });
         }
-      } catch {}
-    }
+      }
+    } catch {}
 
+    // ✅ 仅新增：回传 meta（不影响旧功能）
     onMeta?.({ segments: segMeta, labels });
 
     const onClick = (evt: MouseEvent) => {
@@ -224,6 +224,7 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
     return () => svg.removeEventListener("click", onClick);
   }, [raw, onPickSeg, onMeta]);
 
+  // ✅ 动画高亮逻辑：完全不改
   useEffect(() => {
     const host = hostRef.current;
     const svg = host?.querySelector("svg") as SVGSVGElement | null;
@@ -273,4 +274,3 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
     </div>
   );
 }
-
