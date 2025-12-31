@@ -3,7 +3,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 export type PickSeg = { segKey: string };
-
 export type SvgMeta = {
   segments: Array<{ segKey: string; cx: number; cy: number }>;
   labels: Array<{ text: string; cx: number; cy: number }>;
@@ -14,8 +13,6 @@ type Props = {
   activeSegKeys: string[];
   draftSegKeys?: string[];
   onPickSeg?: (pick: PickSeg) => void;
-
-  // ✅ 新增：把线段中心点和文字标签中心点回传
   onMeta?: (meta: SvgMeta) => void;
 };
 
@@ -156,14 +153,30 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
     const host = hostRef.current;
     if (!host) return;
 
+    // ✅ 关键：host 绝对不允许溢出覆盖右侧按钮
     host.innerHTML = raw || "";
     const svg = host.querySelector("svg") as SVGSVGElement | null;
     if (!svg) return;
 
-    // 全部不可点
+    // ✅ 关键：强制 SVG 缩放到容器宽度内（否则会盖住右侧按钮）
+    // 1) 尽量确保有 viewBox
+    if (!svg.getAttribute("viewBox")) {
+      const w = parseFloat(svg.getAttribute("width") || "") || 0;
+      const h = parseFloat(svg.getAttribute("height") || "") || 0;
+      if (w > 0 && h > 0) svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+    }
+    // 2) 让它响应式
+    svg.setAttribute("width", "100%");
+    svg.removeAttribute("height");
+    (svg.style as any).width = "100%";
+    (svg.style as any).height = "auto";
+    (svg.style as any).display = "block";
+    (svg.style as any).maxWidth = "100%";
+
+    // ✅ 默认：SVG 内全部不可点（不会点到轮廓/黑灰线/文字）
     svg.querySelectorAll<SVGElement>("*").forEach((n) => ((n as any).style.pointerEvents = "none"));
 
-    // 只挑彩色细线段
+    // ✅ 只挑彩色细线段做可点 segment
     const candidates = Array.from(svg.querySelectorAll<SVGElement>(SHAPE_SELECTOR)).filter(looksMeridianSegment);
 
     const segMeta: SvgMeta["segments"] = [];
@@ -182,7 +195,6 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
       } catch {}
     }
 
-    // 采集文字标签中心点（用于 auto-map）
     const labels: SvgMeta["labels"] = [];
     const texts = Array.from(svg.querySelectorAll<SVGTextElement>("text"));
     for (const t of texts) {
@@ -247,7 +259,19 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
           <div style={{ fontSize: 13, lineHeight: 1.6 }}>{err}</div>
         </div>
       ) : null}
-      <div ref={hostRef} style={{ border: "1px solid #eee", borderRadius: 12, overflow: "hidden" }} />
+
+      {/* ✅ 关键：overflow hidden + maxWidth 让 SVG 永远别盖住右侧按钮 */}
+      <div
+        ref={hostRef}
+        style={{
+          border: "1px solid #eee",
+          borderRadius: 12,
+          overflow: "hidden",
+          maxWidth: "100%",
+          position: "relative",
+        }}
+      />
     </div>
   );
 }
+
