@@ -22,9 +22,6 @@ function reverseLookup(map: Record<string, string[]>, segKey: string): string | 
   for (const [k, arr] of Object.entries(map)) if (arr.includes(segKey)) return k;
   return null;
 }
-function normColor(c: string) {
-  return (c || "").trim().toLowerCase();
-}
 
 export default function MeridianPanel({ svgPath }: { svgPath: string }) {
   const mode: Mode = isTwelveMode(svgPath) ? "twelve" : "extra";
@@ -38,17 +35,25 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
   const [draftMap, setDraftMap] = useState<MapShape>(MERIDIAN_MAP);
   const [meta, setMeta] = useState<SvgMeta | null>(null);
 
-  // ✅ 关键：避免“读完之前就写回覆盖”
   const [loaded, setLoaded] = useState(false);
 
-  // ✅ 预览流动（点线就立刻流动，方便你检查）
+  // ✅ 预览流动（用来点线段时立即看到）
   const [previewSegKeys, setPreviewSegKeys] = useState<string[]>([]);
   const previewTimer = useRef<number | null>(null);
 
-  // ✅ Debug：显示最后点到的 segKey（用来判断到底有没有触发 click）
-  const [lastPick, setLastPick] = useState<string>("");
+  const clearPreview = () => {
+    if (previewTimer.current) window.clearTimeout(previewTimer.current);
+    previewTimer.current = null;
+    setPreviewSegKeys([]);
+  };
 
-  // 1) 读 localStorage
+  const startPreview = (keys: string[], ms = 900) => {
+    if (previewTimer.current) window.clearTimeout(previewTimer.current);
+    setPreviewSegKeys(keys);
+    previewTimer.current = window.setTimeout(() => setPreviewSegKeys([]), ms);
+  };
+
+  // 读 localStorage
   useEffect(() => {
     try {
       const raw = localStorage.getItem(storageKey(svgPath));
@@ -60,7 +65,7 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
     setLoaded(true);
   }, [svgPath]);
 
-  // 2) 读完才写回
+  // 写回（读完才写）
   useEffect(() => {
     if (!loaded) return;
     try {
@@ -68,32 +73,22 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
     } catch {}
   }, [draftMap, svgPath, loaded]);
 
-  // 当前桶
   const bucketSegKeys = useMemo(() => {
     return mode === "twelve"
       ? (draftMap.twelve[selectedTwelve] || [])
       : (draftMap.extra[selectedExtra] || []);
   }, [draftMap, mode, selectedTwelve, selectedExtra]);
 
-  // mapper/view 都用同一套 “activeSegKeys” 来触发流动：
-  // - 如果刚点线段，先预览那条线
-  // - 否则流动当前桶
   const activeSegKeys = useMemo(() => {
     return previewSegKeys.length ? previewSegKeys : bucketSegKeys;
   }, [previewSegKeys, bucketSegKeys]);
 
-  const startPreview = (keys: string[]) => {
-    if (previewTimer.current) window.clearTimeout(previewTimer.current);
-    setPreviewSegKeys(keys);
-    previewTimer.current = window.setTimeout(() => setPreviewSegKeys([]), 800);
-  };
-
   const onPickSeg = ({ segKey }: { segKey: string }) => {
-    setLastPick(segKey);
-    startPreview([segKey]); // ✅ 不管啥模式，先让它动起来，便于确认你点到了什么
+    // 点线段先预览一下，便于确认命中
+    startPreview([segKey], 900);
 
     if (admin) {
-      // ✅ 映射模式：加入/移除当前桶
+      // 映射模式：加入/移除当前桶
       setDraftMap((prev) => {
         const next: MapShape = JSON.parse(JSON.stringify(prev));
         const bucket = mode === "twelve"
@@ -117,86 +112,14 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
   };
 
   const hardReset = () => {
-    try {
-      localStorage.removeItem(storageKey(svgPath));
-    } catch {}
+    try { localStorage.removeItem(storageKey(svgPath)); } catch {}
+    clearPreview();
     setDraftMap(MERIDIAN_MAP);
-    setLastPick("");
-    setPreviewSegKeys([]);
     alert("已清空本 SVG 的本地映射（localStorage）。");
-  };
-
-  // ✅ Auto-map（按颜色）——清空后还能重新生成
-  const autoMapByColor = () => {
-    if (mode !== "twelve") {
-      alert("Auto-map 目前只对 12经这张图做。");
-      return;
-    }
-    if (!meta || meta.segments.length === 0) {
-      alert("图还没加载完（meta 为空），等一下再点。");
-      return;
-    }
-
-    // segments 里必须有 stroke（InlineSvg 负责提供）
-    const hasStroke = meta.segments.some((s: any) => !!(s as any).stroke);
-    if (!hasStroke) {
-      alert("当前 InlineSvg 没有回传 stroke 颜色，无法按颜色自动分组。请先换回带 stroke 的 InlineSvg。");
-      return;
-    }
-
-    // 颜色 -> segKeys
-    const colorBuckets = new Map<string, string[]>();
-    for (const s of meta.segments as any[]) {
-      const c = normColor(s.stroke || "");
-      if (!c) continue;
-      const arr = colorBuckets.get(c) || [];
-      arr.push(s.segKey);
-      colorBuckets.set(c, arr);
-    }
-
-    const top = Array.from(colorBuckets.entries())
-      .map(([color, segKeys]) => ({ color, segKeys, n: segKeys.length }))
-      .sort((a, b) => b.n - a.n)
-      .slice(0, 12);
-
-    if (top.length < 8) {
-      alert(`颜色桶太少（${top.length}），这张 SVG 可能不是按颜色区分经络。`);
-      return;
-    }
-
-    // 计算每个颜色桶中心点（近似用于排序稳定）
-    const segPos = new Map((meta.segments as any[]).map((s) => [s.segKey, s]));
-    const groups = top.map((g) => {
-      let sx = 0, sy = 0, cnt = 0;
-      for (const k of g.segKeys) {
-        const p = segPos.get(k);
-        if (!p) continue;
-        sx += p.cx; sy += p.cy; cnt++;
-      }
-      return { ...g, cx: cnt ? sx / cnt : 0, cy: cnt ? sy / cnt : 0 };
-    });
-
-    // 稳定分配：按左右分 6+6 再各自按 y 排
-    const sorted = groups.slice().sort((a, b) => a.cx - b.cx);
-    const left = sorted.slice(0, 6).sort((a, b) => a.cy - b.cy);
-    const right = sorted.slice(6, 12).sort((a, b) => a.cy - b.cy);
-    const merged = [...left, ...right];
-
-    setDraftMap((prev) => {
-      const next: MapShape = JSON.parse(JSON.stringify(prev));
-      for (const id of TWELVE) next.twelve[id] = [];
-      for (let i = 0; i < Math.min(12, merged.length); i++) {
-        next.twelve[TWELVE[i]] = merged[i].segKeys.slice();
-      }
-      return next;
-    });
-
-    alert("已生成 12 组初稿。现在进入映射模式，逐个按钮检查，点线段增删修正即可。");
   };
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 12 }}>
-      {/* 左：图 */}
       <div style={{ border: "1px solid #e5e5e5", borderRadius: 14, padding: 12, background: "#fff", overflow: "hidden" }}>
         <InlineSvg
           src={svgPath}
@@ -207,22 +130,19 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
         />
       </div>
 
-      {/* 右：控制 + 列表 */}
       <div style={{ border: "1px solid #e5e5e5", borderRadius: 14, padding: 12, background: "#fff" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
           <div>
             <div style={{ fontWeight: 900, fontSize: 16 }}>
               {mode === "twelve" ? "Mapper（12经）" : "Mapper（奇经）"}
             </div>
-            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.7, lineHeight: 1.5 }}>
-              loaded: <b>{String(loaded)}</b><br />
-              可点线段总数: <b>{meta?.segments?.length ?? "?"}</b><br />
-              最后点到: <code style={{ fontSize: 11 }}>{lastPick || "（无）"}</code>
+            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.7 }}>
+              可点线段总数：<b>{meta?.segments?.length ?? "?"}</b>
             </div>
           </div>
 
           <button
-            onClick={() => setAdmin((v) => !v)}
+            onClick={() => { clearPreview(); setAdmin((v) => !v); }}
             style={{
               cursor: "pointer",
               padding: "8px 10px",
@@ -237,37 +157,7 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
           </button>
         </div>
 
-        {admin && mode === "twelve" ? (
-          <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button
-              onClick={autoMapByColor}
-              style={{
-                cursor: "pointer",
-                padding: "10px 12px",
-                borderRadius: 10,
-                border: "1px solid #ddd",
-                background: "#fafafa",
-                fontWeight: 900,
-              }}
-            >
-              Auto-map（按颜色，12组）
-            </button>
-
-            <button
-              onClick={hardReset}
-              style={{
-                cursor: "pointer",
-                padding: "10px 12px",
-                borderRadius: 10,
-                border: "1px solid #f2c1c1",
-                background: "#fff6f6",
-                fontWeight: 900,
-              }}
-            >
-              强制重置
-            </button>
-          </div>
-        ) : admin ? (
+        {admin ? (
           <div style={{ marginTop: 10 }}>
             <button
               onClick={hardReset}
@@ -292,9 +182,10 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
               <button
                 key={id}
                 onClick={() => {
+                  // ✅ 关键：切换按钮时清掉 preview，避免“短流动”
+                  clearPreview();
                   if (mode === "twelve") setSelectedTwelve(id as TwelveId);
                   else setSelectedExtra(id as ExtraId);
-                  // ✅ 选名称立即流动：activeSegKeys 会用 bucketSegKeys
                 }}
                 style={{
                   cursor: "pointer",
@@ -316,13 +207,9 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
           当前选中：<code>{currentId}</code>｜当前桶线段数：<b>{bucketSegKeys.length}</b>
         </div>
 
-        {/* 当前桶列表：你点线段加没加，一眼就知道 */}
+        {/* 列表（删能用，说明 state 正常） */}
         <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12 }}>
           <div style={{ fontWeight: 900 }}>当前桶 segKey 列表</div>
-          <div style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>
-            映射模式：点线段 = 加/删；点完会预览流动 0.8 秒。
-          </div>
-
           <div style={{ marginTop: 8, maxHeight: 240, overflow: "auto", border: "1px solid #eee", borderRadius: 12, padding: 8 }}>
             {bucketSegKeys.length === 0 ? (
               <div style={{ fontSize: 12, opacity: 0.7 }}>（空）</div>
@@ -342,8 +229,7 @@ export default function MeridianPanel({ svgPath }: { svgPath: string }) {
                           if (idx >= 0) bucket.splice(idx, 1);
                           return next;
                         });
-                        startPreview([k]);
-                        setLastPick(k);
+                        startPreview([k], 900);
                       }}
                       style={{
                         cursor: "pointer",
