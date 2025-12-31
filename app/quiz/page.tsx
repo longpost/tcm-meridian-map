@@ -1,22 +1,33 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import InlineSvg from "../../components/InlineSvg";
-import { MERIDIAN_MAP, type TwelveId } from "../../lib/meridianMap";
+import { MERIDIAN_MAP, type TwelveId, type MapShape } from "../../lib/meridianMap";
 
 const TWELVE: TwelveId[] = ["LU","LI","ST","SP","HT","SI","BL","KI","PC","SJ","GB","LR"];
 
+const SVG_PATH = "/assets/12meridians12shichen.svg";
+const STORAGE_KEY = `tcm_meridian_map::${SVG_PATH}`;
+
 export default function QuizPage() {
-  const svgPath = "/assets/12meridians12shichen.svg";
+  const [map, setMap] = useState<MapShape>(MERIDIAN_MAP);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.twelve && parsed?.extra) setMap(parsed);
+      }
+    } catch {}
+  }, []);
 
   const [target, setTarget] = useState<TwelveId>(() => pickRandom(TWELVE));
   const [last, setLast] = useState<{ picked: string; correct: boolean } | null>(null);
   const [score, setScore] = useState({ right: 0, total: 0 });
 
-  const activeSegKeys = useMemo(() => {
-    // 练习时可以不高亮任何，或给一点提示：高亮目标经络
-    return MERIDIAN_MAP.twelve[target] || [];
-  }, [target]);
+  // 练习时是否给提示：这里我默认高亮目标经络（你不想提示就改成 []）
+  const hintSegKeys = useMemo(() => map.twelve[target] || [], [map, target]);
 
   return (
     <main style={{ maxWidth: 1240, margin: "0 auto", padding: 18 }}>
@@ -24,7 +35,7 @@ export default function QuizPage() {
         <div>
           <div style={{ fontSize: 20, fontWeight: 900 }}>Quiz（练习判对错）</div>
           <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
-            题目：请在图上点出 <b>{target}</b> 对应的经络线段。点错会提示正确答案。
+            题目：请在图上点出 <b>{target}</b>。映射来源：mapper 的本地映射（localStorage）。
           </div>
         </div>
         <a href="/" style={{ fontWeight: 900, textDecoration: "none" }}>← Home</a>
@@ -54,10 +65,10 @@ export default function QuizPage() {
 
       <div style={{ marginTop: 12 }}>
         <InlineSvg
-          src={svgPath}
-          activeSegKeys={activeSegKeys} // 给提示就留着，不想提示就改成 []
+          src={SVG_PATH}
+          activeSegKeys={hintSegKeys} // 提示高亮（不想提示就传 []）
           onPickSeg={({ segKey }) => {
-            const picked = reverseLookup(MERIDIAN_MAP.twelve as any, segKey) || "（未映射）";
+            const picked = reverseLookup(map.twelve as any, segKey) || "（未映射）";
             const correct = picked === target;
 
             setLast({ picked, correct });
@@ -70,7 +81,7 @@ export default function QuizPage() {
       </div>
 
       <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75, lineHeight: 1.6 }}>
-        注意：如果你点到 “（未映射）”，说明那段线还没被管理员映射进任何经络（去 /mapper 补）。
+        如果你一直看到 “（未映射）”，说明你还没在 <code>/mapper</code> 完成映射（或没保存到本地）。
       </div>
     </main>
   );
