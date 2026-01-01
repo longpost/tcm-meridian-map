@@ -13,12 +13,12 @@ export default function MapperPage() {
   }, [mode]);
 
   return (
-    <div style={{ maxWidth: 1200, margin: "0 auto", padding: 16 }}>
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
+    <div style={{ maxWidth: 1280, margin: "0 auto", padding: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
         <div>
           <div style={{ fontSize: 20, fontWeight: 900 }}>Mapper（映射管理）</div>
           <div style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>
-            这个页面必须和 View 页面同一套渲染逻辑，否则会出现：View 能流动、Mapper 不响应点击。
+            强制显示 Auto-map/重置；强制开启映射模式（admin）。
           </div>
         </div>
 
@@ -55,12 +55,8 @@ export default function MapperPage() {
       </div>
 
       <div style={{ marginTop: 12 }}>
-        {/* 重点：不给任何覆盖层，SVG 必须在最上层接点击 */}
-        <div style={{ position: "relative" }}>
-          <MeridianPanel svgPath={svgPath} />
-        </div>
+        <MeridianPanel svgPath={svgPath} defaultAdmin={true} alwaysShowTools={true} />
       </div>
     </div>
   );
 }
-
