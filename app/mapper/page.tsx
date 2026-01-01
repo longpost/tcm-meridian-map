@@ -6,7 +6,7 @@ type TwelveId = "LU"|"LI"|"ST"|"SP"|"HT"|"SI"|"BL"|"KI"|"PC"|"SJ"|"GB"|"LR";
 const TWELVE: TwelveId[] = ["LU","LI","ST","SP","HT","SI","BL","KI","PC","SJ","GB","LR"];
 
 const SVG_SRC = "/assets/12meridians12shichen.svg";
-const BUILD = "MAPPER_SINGLEFILE_BUILD_004";
+const BUILD = "MAPPER_SINGLEFILE_BUILD_005_AUTOMAP";
 
 type MapData = Record<TwelveId, string[]>;
 const STORAGE_KEY = `tcm_mapper_single::${SVG_SRC}`;
@@ -27,6 +27,10 @@ function saveMap(m: MapData) {
 }
 
 function norm(s: string) { return (s||"").trim().toLowerCase(); }
+function normStroke(s: string) {
+  // 统一一点，避免 " rgb(…)" / "#ABC" 之类
+  return norm(s).replace(/\s+/g, "");
+}
 function getStroke(el: SVGElement) {
   return (el.getAttribute("stroke") || (el.getAttribute("style")||"").match(/stroke:\s*([^;]+)/i)?.[1] || "").trim();
 }
@@ -35,7 +39,7 @@ function getStrokeWidth(el: SVGElement) {
   return parseFloat(String(sw).replace("px","")) || 0;
 }
 function isGrayish(stroke: string) {
-  const s = norm(stroke);
+  const s = normStroke(stroke);
   if (!s) return true;
   if (s === "black" || s === "#000" || s === "#000000") return true;
   const m = s.match(/^rgb\((\d+),(\d+),(\d+)\)$/);
@@ -70,6 +74,7 @@ export default function MapperSingleFile() {
   const [raw, setRaw] = useState("");
   const [err, setErr] = useState("");
 
+  // debug
   const [pageClicks, setPageClicks] = useState(0);
   const [svgTarget, setSvgTarget] = useState<string>("(none)");
   const [hitClicks, setHitClicks] = useState(0);
@@ -78,6 +83,10 @@ export default function MapperSingleFile() {
   const [selected, setSelected] = useState<TwelveId>("LU");
   const [mapData, setMapData] = useState<MapData>(() => ({} as any));
   const bucket = mapData[selected] || [];
+
+  // ✅ 新增：记录 segKey -> stroke，用于自动映射
+  const segStrokeRef = useRef<Record<string, string>>({});
+  const [autoInfo, setAutoInfo] = useState<string>("");
 
   // load mapping
   useEffect(() => {
@@ -122,6 +131,7 @@ export default function MapperSingleFile() {
     peStyle.textContent = `
       .tcm-hit { pointer-events: all !important; cursor: pointer !important; }
       .tcm-hit * { pointer-events: all !important; }
+
       @keyframes tcmFlow { 0%{stroke-dashoffset:0;} 100%{stroke-dashoffset:-26;} }
       .m-dim { opacity: 0.10; }
       .m-active {
@@ -154,13 +164,19 @@ export default function MapperSingleFile() {
     };
     svg.addEventListener("click", cap, true);
 
+    // ✅ 清空 stroke 记录并重建
+    segStrokeRef.current = {};
+    setAutoInfo("");
+
     // build hit layers
     const shapes = Array.from(svg.querySelectorAll<SVGElement>("path,polyline,line")).filter(looksMeridian);
 
-    // 给每条候选线一个稳定 segKey（按当前筛选顺序）
     shapes.forEach((el, i) => {
       const segKey = `s${i}`;
       el.setAttribute("data-segkey", segKey);
+
+      // ✅ 记录 stroke
+      segStrokeRef.current[segKey] = normStroke(getStroke(el) || "");
 
       // hit clone
       const hit = el.cloneNode(true) as SVGElement;
@@ -181,7 +197,7 @@ export default function MapperSingleFile() {
         setHitClicks((c) => c + 1);
         setLastHit(segKey);
 
-        // ✅ 点一下：加入/移除映射（能增加能删除）
+        // 点一下：加入/移除映射
         setMapData((prev) => {
           const next: MapData = JSON.parse(JSON.stringify(prev));
           const arr = next[selected] || [];
@@ -194,6 +210,10 @@ export default function MapperSingleFile() {
         });
       });
     });
+
+    // 给自动映射提示一点信息
+    const uniqColors = new Set(Object.values(segStrokeRef.current).filter(Boolean));
+    setAutoInfo(`可用颜色桶数：${uniqColors.size}（用于 Auto-map）`);
 
     return () => {
       svg.removeEventListener("click", cap, true);
@@ -225,6 +245,46 @@ export default function MapperSingleFile() {
     });
   }, [bucket, raw]);
 
+  // ✅ 新增：自动映射（按 stroke 颜色分桶）
+  const autoMap = () => {
+    const segStroke = segStrokeRef.current;
+    const entries = Object.entries(segStroke).filter(([_, stroke]) => stroke && stroke !== "none" && !isGrayish(stroke));
+
+    if (entries.length < 20) {
+      alert("Auto-map 失败：当前 SVG 解析到的彩色线段太少（可能 SVG 还没加载好）。");
+      return;
+    }
+
+    const buckets = new Map<string, string[]>();
+    for (const [segKey, stroke] of entries) {
+      const key = normStroke(stroke);
+      const arr = buckets.get(key) || [];
+      arr.push(segKey);
+      buckets.set(key, arr);
+    }
+
+    const top = Array.from(buckets.entries())
+      .map(([stroke, segKeys]) => ({ stroke, segKeys, n: segKeys.length }))
+      .sort((a, b) => b.n - a.n)
+      .slice(0, 12);
+
+    if (top.length < 8) {
+      alert(`Auto-map 失败：颜色桶太少（${top.length}）。这张 SVG 可能不是按颜色分经。`);
+      return;
+    }
+
+    const next = Object.fromEntries(TWELVE.map(k => [k, []])) as MapData;
+    for (let i = 0; i < Math.min(12, top.length); i++) {
+      next[TWELVE[i]] = top[i].segKeys.slice();
+    }
+
+    saveMap(next);
+    setMapData(next);
+
+    const summary = top.map((g, i) => `${TWELVE[i]}<=${g.n}`).join("  ");
+    alert("已生成自动映射初稿（按颜色桶）。\n接下来你用“点线段增删”微调就行。\n" + summary);
+  };
+
   return (
     <main
       style={{ maxWidth: 1280, margin: "0 auto", padding: 16 }}
@@ -237,6 +297,8 @@ export default function MapperSingleFile() {
         pageClicks: <b>{pageClicks}</b> ｜ hitClicks: <b>{hitClicks}</b> ｜ lastHit: <code>{lastHit}</code>
         <br />
         svg target: <code>{svgTarget}</code>
+        <br />
+        {autoInfo ? <span>{autoInfo}</span> : null}
       </div>
 
       {err ? (
@@ -252,6 +314,45 @@ export default function MapperSingleFile() {
 
         <div style={{ border: "1px solid #e5e5e5", borderRadius: 14, padding: 12, background: "#fff" }}>
           <div style={{ fontWeight: 900, marginBottom: 8 }}>选择经络（点线段即可加入/移除）</div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+            <button
+              onClick={autoMap}
+              style={{
+                cursor: "pointer",
+                padding: "10px 12px",
+                borderRadius: 10,
+                border: "1px solid #ddd",
+                background: "#fafafa",
+                fontWeight: 900
+              }}
+            >
+              Auto-map（按颜色生成初稿）
+            </button>
+
+            <button
+              onClick={() => {
+                const empty = Object.fromEntries(TWELVE.map(k => [k, []])) as MapData;
+                saveMap(empty);
+                setMapData(empty);
+                alert("已清空。");
+              }}
+              style={{ cursor: "pointer", padding: "10px 12px", borderRadius: 10, border: "1px solid #f2c1c1", background: "#fff6f6", fontWeight: 900 }}
+            >
+              清空全部
+            </button>
+
+            <button
+              onClick={() => {
+                const txt = JSON.stringify(mapData, null, 2);
+                navigator.clipboard?.writeText(txt);
+                alert("已复制 JSON 到剪贴板");
+              }}
+              style={{ cursor: "pointer", padding: "10px 12px", borderRadius: 10, border: "1px solid #ddd", background: "#fafafa", fontWeight: 900 }}
+            >
+              复制 JSON
+            </button>
+          </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 8 }}>
             {TWELVE.map((id) => {
@@ -308,32 +409,9 @@ export default function MapperSingleFile() {
             )}
           </div>
 
-          <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-            <button
-              onClick={() => {
-                const empty = Object.fromEntries(TWELVE.map(k => [k, []])) as MapData;
-                saveMap(empty);
-                setMapData(empty);
-                alert("已清空。");
-              }}
-              style={{ cursor: "pointer", padding: "10px 12px", borderRadius: 10, border: "1px solid #f2c1c1", background: "#fff6f6", fontWeight: 900 }}
-            >
-              清空全部
-            </button>
-
-            <button
-              onClick={() => {
-                const txt = JSON.stringify(mapData, null, 2);
-                navigator.clipboard?.writeText(txt);
-                alert("已复制 JSON 到剪贴板");
-              }}
-              style={{ cursor: "pointer", padding: "10px 12px", borderRadius: 10, border: "1px solid #ddd", background: "#fafafa", fontWeight: 900 }}
-            >
-              复制 JSON
-            </button>
-          </div>
         </div>
       </div>
     </main>
   );
 }
+
