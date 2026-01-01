@@ -71,6 +71,7 @@ function looksMeridianSegment(el: SVGElement): boolean {
   if (fill && fill !== "none" && fill !== "transparent") return false;
 
   const sw = getStrokeWidth(el);
+  // 保留你原来的过滤逻辑
   if (sw <= 0 || sw > 1.6) return false;
 
   try {
@@ -151,7 +152,7 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
     const svg = host.querySelector("svg") as SVGSVGElement | null;
     if (!svg) return;
 
-    // 适配
+    // viewBox / 适配
     if (!svg.getAttribute("viewBox")) {
       const w = parseFloat(svg.getAttribute("width") || "") || 0;
       const h = parseFloat(svg.getAttribute("height") || "") || 0;
@@ -180,8 +181,6 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
 
     const segMeta: SvgMeta["segments"] = [];
     const labels: SvgMeta["labels"] = [];
-
-    // ✅ 直接给每条线制造“透明粗点击层”，并且给点击层直接绑定事件（不搞委托）
     const cleanupFns: Array<() => void> = [];
 
     for (const el of candidates) {
@@ -192,22 +191,23 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
       el.classList.add("m-seg");
       (el as any).style.pointerEvents = "none";
 
-      // 点击层
+      // 点击层：透明粗线，保证命中
       const hit = el.cloneNode(true) as SVGElement;
       hit.removeAttribute("id");
       hit.setAttribute("data-segkey", key);
       hit.setAttribute("stroke", "rgba(0,0,0,0)");
       hit.setAttribute("fill", "none");
+
       const sw = getStrokeWidth(el);
       const hitWidth = Math.max(10, sw * 8);
       hit.setAttribute("stroke-width", String(hitWidth));
       (hit as any).style.pointerEvents = "stroke";
       (hit as any).style.cursor = "pointer";
 
-      // 插到原线前面，确保命中 hit
+      // 插到原线前面，确保先点到 hit
       el.parentNode?.insertBefore(hit, el);
 
-      // click bind（关键）
+      // 直接绑 click（别再委托）
       const fn = (evt: Event) => {
         evt.preventDefault();
         evt.stopPropagation();
@@ -220,28 +220,30 @@ export default function InlineSvg({ src, activeSegKeys, draftSegKeys, onPickSeg,
       try {
         const bb = (el as any).getBBox?.();
         if (bb && isFinite(bb.x) && isFinite(bb.y)) {
-          segMeta.push({ segKey: key, cx: bb.x + bb.width / 2, cy: bb.y + bb.height / 2, stroke: getStroke(el) || "" });
+          segMeta.push({
+            segKey: key,
+            cx: bb.x + bb.width / 2,
+            cy: bb.y + bb.height / 2,
+            stroke: getStroke(el) || "",
+          });
         }
       } catch {}
     }
 
+    // 收集剩余 text（未来做英文标注用）
     try {
       const remainTexts = Array.from(svg.querySelectorAll<SVGTextElement>("text"));
       for (const t of remainTexts) {
         const txt = (t.textContent || "").trim();
         if (!txt) continue;
         const bb = (t as any).getBBox?.();
-        if (bb && isFinite(bb.x) && isFinite(bb.y)) {
-          labels.push({ text: txt, cx: bb.x + bb.width / 2, cy: bb.y + bb.height / 2 });
-        }
+        if (bb && isFinite(bb.x) && isFinite(bb.y)) labels.push({ text: txt, cx: bb.x + bb.width / 2, cy: bb.y + bb.height / 2 });
       }
     } catch {}
 
     onMeta?.({ segments: segMeta, labels });
 
-    return () => {
-      cleanupFns.forEach((f) => f());
-    };
+    return () => cleanupFns.forEach((f) => f());
   }, [raw, onPickSeg, onMeta]);
 
   // 动画高亮：只对 m-seg
