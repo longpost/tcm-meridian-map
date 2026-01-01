@@ -57,15 +57,13 @@ function looksMeridianSegment(el: SVGElement) {
 
   const sw = getStrokeWidth(el);
   if (sw <= 0) return false;
-
-  // 不要太严，否则你又“segments=0”
-  if (sw > 3.2) return false;
+  if (sw > 6) return false; // 放宽，避免 segments=0
 
   try {
     const anyEl = el as any;
     if (typeof anyEl.getTotalLength === "function") {
       const len = anyEl.getTotalLength();
-      if (!isFinite(len) || len < 20) return false;
+      if (!isFinite(len) || len < 10) return false;
     }
   } catch {}
 
@@ -97,9 +95,13 @@ export default function SvgCanvas({ src, activeSegKeys, onPick, onMeta }: Props)
   const [raw, setRaw] = useState("");
   const [err, setErr] = useState("");
 
+  // ✅ debug：证明点击是否真的进来了
+  const [clickCount, setClickCount] = useState(0);
+  const [lastHit, setLastHit] = useState<string>("");
+  const [lastTarget, setLastTarget] = useState<string>("");
+
   const activeSet = useMemo(() => new Set(activeSegKeys), [activeSegKeys]);
 
-  // fetch svg
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -115,17 +117,23 @@ export default function SvgCanvas({ src, activeSegKeys, onPick, onMeta }: Props)
         if (!cancelled) setErr(`SVG 读取失败：${String(e?.message || e)}（${src}）`);
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [src]);
 
-  // inject + make clickable
   useEffect(() => {
     ensureStyleOnce();
     const host = hostRef.current;
     if (!host) return;
+
     host.innerHTML = raw || "";
+    host.style.pointerEvents = "auto";
+
     const svg = host.querySelector("svg") as SVGSVGElement | null;
     if (!svg) return;
+
+    svg.style.pointerEvents = "auto";
 
     // size fit
     if (!svg.getAttribute("viewBox")) {
@@ -140,10 +148,7 @@ export default function SvgCanvas({ src, activeSegKeys, onPick, onMeta }: Props)
     (svg.style as any).display = "block";
     (svg.style as any).maxWidth = "100%";
 
-    // everything not clickable by default
-    svg.querySelectorAll<SVGElement>("*").forEach((n) => ((n as any).style.pointerEvents = "none"));
-
-    // remove Korean labels (so you stop seeing 韩文)
+    // 删韩文
     try {
       const texts = Array.from(svg.querySelectorAll<SVGTextElement>("text"));
       for (const t of texts) {
@@ -157,14 +162,21 @@ export default function SvgCanvas({ src, activeSegKeys, onPick, onMeta }: Props)
     const meta: SvgMeta = { segments: [] };
     const cleanup: Array<() => void> = [];
 
+    // ✅ 兜底：给 svg 自己也加捕获监听，保证你点到了啥一定能被记录
+    const svgClickCapture = (evt: MouseEvent) => {
+      const t = evt.target as Element | null;
+      const tag = t?.tagName?.toLowerCase?.() || "(none)";
+      const dk = (t as any)?.getAttribute?.("data-segkey") || "";
+      setLastTarget(`${tag}${dk ? ` data-segkey=${dk}` : ""}`);
+    };
+    svg.addEventListener("click", svgClickCapture, true);
+    cleanup.push(() => svg.removeEventListener("click", svgClickCapture, true));
+
     candidates.forEach((el, i) => {
       const segKey = `s${i}`;
-
-      // original: animate here
       el.setAttribute("data-segkey", segKey);
-      (el as any).style.pointerEvents = "none";
 
-      // hit layer: transparent thick stroke
+      // hit layer：透明粗线，放在“后面”（更顶层，避免被盖）
       const hit = el.cloneNode(true) as SVGElement;
       hit.removeAttribute("id");
       hit.setAttribute("data-segkey", segKey);
@@ -172,15 +184,20 @@ export default function SvgCanvas({ src, activeSegKeys, onPick, onMeta }: Props)
       hit.setAttribute("fill", "none");
 
       const sw = getStrokeWidth(el);
-      hit.setAttribute("stroke-width", String(Math.max(12, sw * 6)));
-      (hit as any).style.pointerEvents = "stroke";
+      hit.setAttribute("stroke-width", String(Math.max(14, sw * 8)));
+
+      // ✅ 用 all 而不是 stroke，避免某些浏览器对 polyline/line 命中诡异
+      (hit as any).style.pointerEvents = "all";
       (hit as any).style.cursor = "pointer";
 
-      el.parentNode?.insertBefore(hit, el);
+      // ✅ append 到最后（顶层）
+      el.parentNode?.appendChild(hit);
 
       const fn = (evt: Event) => {
         evt.preventDefault();
         evt.stopPropagation();
+        setClickCount((c) => c + 1);
+        setLastHit(segKey);
         onPick(segKey);
       };
       hit.addEventListener("click", fn);
@@ -200,13 +217,11 @@ export default function SvgCanvas({ src, activeSegKeys, onPick, onMeta }: Props)
     const svg = host?.querySelector("svg") as SVGSVGElement | null;
     if (!svg) return;
 
-    const segs = Array.from(svg.querySelectorAll<SVGElement>(SHAPE_SELECTOR));
-    segs.forEach((el) => el.classList.remove("m-active", "m-dim"));
+    const all = Array.from(svg.querySelectorAll<SVGElement>(`${SHAPE_SELECTOR}[data-segkey]`));
+    all.forEach((el) => el.classList.remove("m-active", "m-dim"));
 
     if (activeSet.size === 0) return;
 
-    // dim all candidates, highlight actives
-    const all = Array.from(svg.querySelectorAll<SVGElement>(`${SHAPE_SELECTOR}[data-segkey]`));
     all.forEach((el) => el.classList.add("m-dim"));
     all.forEach((el) => {
       const k = el.getAttribute("data-segkey") || "";
@@ -225,7 +240,16 @@ export default function SvgCanvas({ src, activeSegKeys, onPick, onMeta }: Props)
           <div style={{ fontSize: 13, lineHeight: 1.6 }}>{err}</div>
         </div>
       ) : null}
+
+      {/* ✅ debug 面板：你别再“感觉”，这里直接给证据 */}
+      <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 8, lineHeight: 1.6 }}>
+        clickCount: <b>{clickCount}</b> ｜ lastHit: <code>{lastHit || "（无）"}</code>
+        <br />
+        target: <code>{lastTarget || "（无）"}</code>
+      </div>
+
       <div ref={hostRef} style={{ border: "1px solid #eee", borderRadius: 12, overflow: "hidden" }} />
     </div>
   );
 }
+
