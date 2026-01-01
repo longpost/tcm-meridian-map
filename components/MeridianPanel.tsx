@@ -1,10 +1,12 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { usePathname } from "next/navigation";
 import InlineSvg, { type SvgMeta } from "./InlineSvg";
 import { MERIDIAN_MAP, type TwelveId, type ExtraId, type MapShape } from "../lib/meridianMap";
 
 type Mode = "twelve" | "extra";
+const BUILD_ID = "MeridianPanel_BUILD_2025-12-31_003"; // ✅ 你线上必须能看到它
 
 const TWELVE: TwelveId[] = ["LU","LI","ST","SP","HT","SI","BL","KI","PC","SJ","GB","LR"];
 const EXTRA: ExtraId[] = ["REN","DU","CHONG","DAI","YINWEI","YANGWEI","YINQIAO","YANGQIAO"];
@@ -26,36 +28,27 @@ function normColor(c: string) {
   return (c || "").trim().toLowerCase();
 }
 
-type Props = {
-  svgPath: string;
-  // mapper 页面会传 true：强制进入映射管理模式
-  defaultAdmin?: boolean;
-  // mapper 页面会传 true：始终显示生成/重置按钮
-  alwaysShowTools?: boolean;
-};
+export default function MeridianPanel({ svgPath }: { svgPath: string }) {
+  const pathname = usePathname() || "";
+  const isMapperRoute = pathname.startsWith("/mapper");
 
-export default function MeridianPanel({ svgPath, defaultAdmin = false, alwaysShowTools = false }: Props) {
   const mode: Mode = isTwelveMode(svgPath) ? "twelve" : "extra";
   const ids = mode === "twelve" ? TWELVE : EXTRA;
 
-  const [admin, setAdmin] = useState<boolean>(defaultAdmin);
+  // ✅ 只要在 /mapper：强制 admin
+  const [admin, setAdmin] = useState<boolean>(isMapperRoute);
+
   const [selectedTwelve, setSelectedTwelve] = useState<TwelveId>("LU");
   const [selectedExtra, setSelectedExtra] = useState<ExtraId>("REN");
   const currentId = mode === "twelve" ? selectedTwelve : selectedExtra;
 
   const [draftMap, setDraftMap] = useState<MapShape>(MERIDIAN_MAP);
   const [meta, setMeta] = useState<SvgMeta | null>(null);
-
-  // 避免“读完之前就写回覆盖”
   const [loaded, setLoaded] = useState(false);
 
-  // 预览流动：点线段就短暂流动，帮助确认命中
+  // ✅ 预览流动（点击线段时短预览）
   const [previewSegKeys, setPreviewSegKeys] = useState<string[]>([]);
   const previewTimer = useRef<number | null>(null);
-
-  // 诊断：最后点到的 segKey（你就知道到底有没有命中）
-  const [lastPick, setLastPick] = useState<string>("");
-
   const clearPreview = () => {
     if (previewTimer.current) window.clearTimeout(previewTimer.current);
     previewTimer.current = null;
@@ -66,6 +59,9 @@ export default function MeridianPanel({ svgPath, defaultAdmin = false, alwaysSho
     setPreviewSegKeys(keys);
     previewTimer.current = window.setTimeout(() => setPreviewSegKeys([]), ms);
   };
+
+  // ✅ 自检：你点线段到底有没有命中
+  const [lastPick, setLastPick] = useState<string>("");
 
   // 读 localStorage
   useEffect(() => {
@@ -79,7 +75,7 @@ export default function MeridianPanel({ svgPath, defaultAdmin = false, alwaysSho
     setLoaded(true);
   }, [svgPath]);
 
-  // 写回
+  // 写回（读完才写）
   useEffect(() => {
     if (!loaded) return;
     try {
@@ -87,25 +83,27 @@ export default function MeridianPanel({ svgPath, defaultAdmin = false, alwaysSho
     } catch {}
   }, [draftMap, svgPath, loaded]);
 
+  // ✅ /mapper 强制 admin，不让你点着点着又跑回 view
+  useEffect(() => {
+    if (isMapperRoute) setAdmin(true);
+  }, [isMapperRoute]);
+
   const bucketSegKeys = useMemo(() => {
     return mode === "twelve"
       ? (draftMap.twelve[selectedTwelve] || [])
       : (draftMap.extra[selectedExtra] || []);
   }, [draftMap, mode, selectedTwelve, selectedExtra]);
 
-  // ✅ active：preview 优先，否则桶
   const activeSegKeys = useMemo(() => {
     return previewSegKeys.length ? previewSegKeys : bucketSegKeys;
   }, [previewSegKeys, bucketSegKeys]);
 
   const onPickSeg = ({ segKey }: { segKey: string }) => {
     setLastPick(segKey);
-
-    // 无论什么模式，先让你看到“我点到的是哪段”
     startPreview([segKey], 900);
 
     if (admin) {
-      // ✅ 映射管理：加/减当前桶
+      // ✅ 映射：加/减当前桶
       setDraftMap((prev) => {
         const next: MapShape = JSON.parse(JSON.stringify(prev));
         const bucket = mode === "twelve"
@@ -119,7 +117,7 @@ export default function MeridianPanel({ svgPath, defaultAdmin = false, alwaysSho
       return;
     }
 
-    // 浏览：点线联动按钮
+    // view：点线联动按钮
     const mapObj = mode === "twelve" ? draftMap.twelve : draftMap.extra;
     const hit = reverseLookup(mapObj as any, segKey);
     if (hit) {
@@ -136,14 +134,14 @@ export default function MeridianPanel({ svgPath, defaultAdmin = false, alwaysSho
     alert("已重置并清空本地映射。");
   };
 
-  // ✅ Auto-map（按颜色）——永远保留（至少在 12经图上）
+  // ✅ Auto-map（按颜色）——只要在 /mapper 就必须显示
   const autoMapByColor = () => {
     if (mode !== "twelve") {
       alert("Auto-map 目前只对 12经这张图做。");
       return;
     }
     if (!meta || meta.segments.length === 0) {
-      alert("SVG 还没加载完成（meta.segments=0），等 1 秒再点。");
+      alert("SVG 还没加载好（meta.segments=0），等 1 秒再点。");
       return;
     }
 
@@ -166,7 +164,7 @@ export default function MeridianPanel({ svgPath, defaultAdmin = false, alwaysSho
       return;
     }
 
-    // 用中心点做稳定排序：先左右 6+6，再各自按 y 排
+    // 稳定分配：按左右 6+6，再按 y 排
     const segPos = new Map((meta.segments as any[]).map((s) => [s.segKey, s]));
     const groups = top.map((g) => {
       let sx = 0, sy = 0, cnt = 0;
@@ -192,14 +190,14 @@ export default function MeridianPanel({ svgPath, defaultAdmin = false, alwaysSho
       return next;
     });
 
-    alert("已生成 12 组初稿。现在点 LU/LI… 再点线段就能加减修正。");
+    alert("已生成 12 组初稿。现在点 LU/LI… 再点线段即可加/减修正。");
   };
 
-  const showTools = alwaysShowTools || admin;
+  // ✅ 在 mapper 强制显示工具栏
+  const showTools = isMapperRoute || admin;
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 380px", gap: 12 }}>
-      {/* 图 */}
       <div style={{ border: "1px solid #e5e5e5", borderRadius: 14, padding: 12, background: "#fff", overflow: "hidden" }}>
         <InlineSvg
           src={svgPath}
@@ -210,22 +208,21 @@ export default function MeridianPanel({ svgPath, defaultAdmin = false, alwaysSho
         />
       </div>
 
-      {/* 面板 */}
       <div style={{ border: "1px solid #e5e5e5", borderRadius: 14, padding: 12, background: "#fff" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-          <div>
-            <div style={{ fontWeight: 900, fontSize: 16 }}>
-              {mode === "twelve" ? "12经络" : "任督 + 奇经八脉"}
-              {alwaysShowTools ? "（Mapper）" : "（View）"}
-            </div>
-            <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75, lineHeight: 1.6 }}>
-              可点线段总数：<b>{meta?.segments?.length ?? "?"}</b><br />
-              最后点到：<code style={{ fontSize: 11 }}>{lastPick || "（无）"}</code><br />
-              admin：<b>{String(admin)}</b>
-            </div>
+        {/* ✅ 你线上必须看到 BUILD_ID，否则你没部署对 */}
+        <div style={{ padding: 10, borderRadius: 12, border: "2px solid #111", background: "#fafafa", fontWeight: 900 }}>
+          {BUILD_ID}
+          <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75, lineHeight: 1.6 }}>
+            route: <code>{pathname || "?"}</code><br />
+            svg: <code>{svgPath}</code><br />
+            admin: <b>{String(admin)}</b> / mapperRoute: <b>{String(isMapperRoute)}</b><br />
+            segments: <b>{meta?.segments?.length ?? "?"}</b><br />
+            lastPick: <code style={{ fontSize: 11 }}>{lastPick || "（无）"}</code>
           </div>
+        </div>
 
-          {!alwaysShowTools ? (
+        {!isMapperRoute ? (
+          <div style={{ marginTop: 10 }}>
             <button
               onClick={() => { clearPreview(); setAdmin((v) => !v); }}
               style={{
@@ -240,24 +237,15 @@ export default function MeridianPanel({ svgPath, defaultAdmin = false, alwaysSho
             >
               {admin ? "退出映射" : "进入映射"}
             </button>
-          ) : (
-            <div style={{ fontSize: 12, opacity: 0.7, fontWeight: 900 }}>（此页强制映射模式）</div>
-          )}
-        </div>
+          </div>
+        ) : null}
 
         {showTools ? (
           <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
             {mode === "twelve" ? (
               <button
                 onClick={autoMapByColor}
-                style={{
-                  cursor: "pointer",
-                  padding: "10px 12px",
-                  borderRadius: 10,
-                  border: "1px solid #ddd",
-                  background: "#fafafa",
-                  fontWeight: 900,
-                }}
+                style={{ cursor: "pointer", padding: "10px 12px", borderRadius: 10, border: "1px solid #ddd", background: "#fafafa", fontWeight: 900 }}
               >
                 Auto-map（生成映射）
               </button>
@@ -265,14 +253,7 @@ export default function MeridianPanel({ svgPath, defaultAdmin = false, alwaysSho
 
             <button
               onClick={hardReset}
-              style={{
-                cursor: "pointer",
-                padding: "10px 12px",
-                borderRadius: 10,
-                border: "1px solid #f2c1c1",
-                background: "#fff6f6",
-                fontWeight: 900,
-              }}
+              style={{ cursor: "pointer", padding: "10px 12px", borderRadius: 10, border: "1px solid #f2c1c1", background: "#fff6f6", fontWeight: 900 }}
             >
               重置（清空）
             </button>
@@ -283,21 +264,13 @@ export default function MeridianPanel({ svgPath, defaultAdmin = false, alwaysSho
                 navigator.clipboard?.writeText(txt);
                 alert("已复制映射 JSON");
               }}
-              style={{
-                cursor: "pointer",
-                padding: "10px 12px",
-                borderRadius: 10,
-                border: "1px solid #ddd",
-                background: "#fafafa",
-                fontWeight: 900,
-              }}
+              style={{ cursor: "pointer", padding: "10px 12px", borderRadius: 10, border: "1px solid #ddd", background: "#fafafa", fontWeight: 900 }}
             >
               导出映射
             </button>
           </div>
         ) : null}
 
-        {/* 按钮 */}
         <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: mode === "twelve" ? "repeat(6, 1fr)" : "repeat(4, 1fr)", gap: 8 }}>
           {ids.map((id) => {
             const on = currentId === id;
@@ -305,7 +278,7 @@ export default function MeridianPanel({ svgPath, defaultAdmin = false, alwaysSho
               <button
                 key={id}
                 onClick={() => {
-                  clearPreview();
+                  clearPreview(); // ✅ 不再“闪一下”
                   if (mode === "twelve") setSelectedTwelve(id as TwelveId);
                   else setSelectedExtra(id as ExtraId);
                 }}
@@ -327,49 +300,6 @@ export default function MeridianPanel({ svgPath, defaultAdmin = false, alwaysSho
 
         <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
           当前选中：<code>{currentId}</code>｜当前桶线段数：<b>{bucketSegKeys.length}</b>
-        </div>
-
-        {/* 桶列表 */}
-        <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12 }}>
-          <div style={{ fontWeight: 900 }}>当前桶 segKey 列表</div>
-          <div style={{ marginTop: 8, maxHeight: 260, overflow: "auto", border: "1px solid #eee", borderRadius: 12, padding: 8 }}>
-            {bucketSegKeys.length === 0 ? (
-              <div style={{ fontSize: 12, opacity: 0.7 }}>（空）</div>
-            ) : (
-              bucketSegKeys.map((k) => (
-                <div key={k} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "4px 0", borderBottom: "1px dashed #eee" }}>
-                  <code style={{ fontSize: 11 }}>{k}</code>
-                  {admin ? (
-                    <button
-                      onClick={() => {
-                        setDraftMap((prev) => {
-                          const next: MapShape = JSON.parse(JSON.stringify(prev));
-                          const bucket = mode === "twelve"
-                            ? (next.twelve[currentId as TwelveId] ||= [])
-                            : (next.extra[currentId as ExtraId] ||= []);
-                          const idx = bucket.indexOf(k);
-                          if (idx >= 0) bucket.splice(idx, 1);
-                          return next;
-                        });
-                        setLastPick(k);
-                        startPreview([k], 900);
-                      }}
-                      style={{
-                        cursor: "pointer",
-                        borderRadius: 10,
-                        border: "1px solid #ddd",
-                        background: "#fafafa",
-                        padding: "2px 8px",
-                        fontWeight: 900,
-                      }}
-                    >
-                      删
-                    </button>
-                  ) : null}
-                </div>
-              ))
-            )}
-          </div>
         </div>
       </div>
     </div>
