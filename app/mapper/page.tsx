@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
 type TwelveId = "LU"|"LI"|"ST"|"SP"|"HT"|"SI"|"BL"|"KI"|"PC"|"SJ"|"GB"|"LR";
 const TWELVE: TwelveId[] = ["LU","LI","ST","SP","HT","SI","BL","KI","PC","SJ","GB","LR"];
@@ -47,6 +47,33 @@ function isGrayish(stroke: string) {
   const r=+m[1], g=+m[2], b=+m[3];
   return Math.max(r,g,b)-Math.min(r,g,b) < 18;
 }
+
+// 更宽松的“灰/轮廓”判断：支持 hex、rgb，专门用于标记 skip。
+// ⚠️ 不能用它去过滤 shapes（否则 segKey 序号会变，旧映射会乱）。
+function isGrayishLoose(stroke: string) {
+  const s = normStroke(stroke);
+  if (!s) return true;
+  if (s === "black" || s === "#000" || s === "#000000") return true;
+
+  const m = s.match(/^rgb\((\d+),(\d+),(\d+)\)$/);
+  if (m) {
+    const r=+m[1], g=+m[2], b=+m[3];
+    return Math.max(r,g,b)-Math.min(r,g,b) < 22;
+  }
+
+  const hex = s.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (hex) {
+    let h = hex[1].toLowerCase();
+    if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+    const r = parseInt(h.slice(0,2), 16);
+    const g = parseInt(h.slice(2,4), 16);
+    const b = parseInt(h.slice(4,6), 16);
+    return Math.max(r,g,b)-Math.min(r,g,b) < 22;
+  }
+
+  return false;
+}
+
 function looksMeridian(el: SVGElement) {
   const tag = el.tagName.toLowerCase();
   if (tag !== "path" && tag !== "polyline" && tag !== "line") return false;
@@ -68,6 +95,33 @@ function looksMeridian(el: SVGElement) {
   return true;
 }
 
+function cleanMapData(input: MapData, opts: { skipMap?: Record<string, boolean>; knownSegs?: Record<string, string> }) {
+  const out = Object.fromEntries(TWELVE.map(k => [k, []])) as MapData;
+  const skip = opts.skipMap || {};
+  const known = opts.knownSegs || {};
+
+  let changed = false;
+  for (const id of TWELVE) {
+    const src = Array.isArray((input as any)?.[id]) ? ((input as any)[id] as string[]) : [];
+    const seen = new Set<string>();
+    const cleaned: string[] = [];
+
+    for (const k of src) {
+      if (typeof k !== "string") { changed = true; continue; }
+      if (!k.startsWith("s")) { changed = true; continue; }
+      if (skip[k]) { changed = true; continue; }
+      if (Object.keys(known).length && !(k in known)) { changed = true; continue; }
+      if (seen.has(k)) { changed = true; continue; }
+      seen.add(k);
+      cleaned.push(k);
+    }
+
+    out[id] = cleaned;
+    if (src.length !== cleaned.length) changed = true;
+  }
+  return { out, changed };
+}
+
 export default function MapperSingleFile() {
   const hostRef = useRef<HTMLDivElement | null>(null);
 
@@ -86,6 +140,8 @@ export default function MapperSingleFile() {
 
   // ✅ 新增：记录 segKey -> stroke，用于自动映射
   const segStrokeRef = useRef<Record<string, string>>({});
+  // ✅ 新增：标记 segKey 是否应跳过（人体轮廓/灰色/不该参与映射的线）
+  const segSkipRef = useRef<Record<string, boolean>>({});
   const [autoInfo, setAutoInfo] = useState<string>("");
 
   // load mapping
@@ -164,8 +220,9 @@ export default function MapperSingleFile() {
     };
     svg.addEventListener("click", cap, true);
 
-    // ✅ 清空 stroke 记录并重建
+    // ✅ 清空 stroke/skip 记录并重建
     segStrokeRef.current = {};
+    segSkipRef.current = {};
     setAutoInfo("");
 
     // build hit layers
@@ -176,7 +233,17 @@ export default function MapperSingleFile() {
       el.setAttribute("data-segkey", segKey);
 
       // ✅ 记录 stroke
-      segStrokeRef.current[segKey] = normStroke(getStroke(el) || "");
+      const strokeNorm = normStroke(getStroke(el) || "");
+      segStrokeRef.current[segKey] = strokeNorm;
+
+      // ✅ 轮廓/灰色线：标记 skip（但不改变 segKey 序号），并且不创建 hit layer
+      // 这样：1) 点不到轮廓，不会再误加入映射；2) 旧映射里如果已有轮廓 segKey，会被自动清理/忽略。
+      const skip = strokeNorm ? isGrayishLoose(strokeNorm) : false;
+      if (skip) {
+        el.setAttribute("data-skip", "1");
+        segSkipRef.current[segKey] = true;
+        return;
+      }
 
       // hit clone
       const hit = el.cloneNode(true) as SVGElement;
@@ -197,7 +264,7 @@ export default function MapperSingleFile() {
         setHitClicks((c) => c + 1);
         setLastHit(segKey);
 
-        // 点一下：加入/移除映射
+        // 点一下：加入/移除映射（同时自动清理 skip / 不存在的 segKey）
         setMapData((prev) => {
           const next: MapData = JSON.parse(JSON.stringify(prev));
           const arr = next[selected] || [];
@@ -205,11 +272,23 @@ export default function MapperSingleFile() {
           if (idx >= 0) arr.splice(idx, 1);
           else arr.push(segKey);
           next[selected] = arr;
-          saveMap(next);
-          return next;
+
+          const cleaned = cleanMapData(next, { skipMap: segSkipRef.current, knownSegs: segStrokeRef.current });
+          saveMap(cleaned.out);
+          return cleaned.out;
         });
       });
     });
+
+    // ✅ 自动清理：SVG 注入后，把旧映射里误加的“轮廓/灰色线”等 skip segKey 清掉
+    // 这一步是自动的，你不用手动删。
+    try {
+      const cleaned = cleanMapData(mapData, { skipMap: segSkipRef.current, knownSegs: segStrokeRef.current });
+      if (cleaned.changed) {
+        saveMap(cleaned.out);
+        setMapData(cleaned.out);
+      }
+    } catch {}
 
     // 给自动映射提示一点信息
     const uniqColors = new Set(Object.values(segStrokeRef.current).filter(Boolean));
@@ -230,14 +309,24 @@ export default function MapperSingleFile() {
       (el.getAttribute("data-segkey") || "").startsWith("s")
     );
 
-    all.forEach((el) => el.classList.remove("m-active", "m-dim"));
+    const skip = segSkipRef.current;
+
+    // 先全清：避免切换经络后残留上一次的流动效果
+    all.forEach((el) => {
+      el.classList.remove("m-active");
+      el.classList.remove("m-dim");
+    });
+
+    // 再统一 dim
+    all.forEach((el) => el.classList.add("m-dim"));
 
     if (!bucket.length) return;
 
     const set = new Set(bucket);
-    all.forEach((el) => el.classList.add("m-dim"));
     all.forEach((el) => {
       const k = el.getAttribute("data-segkey") || "";
+      if (!k) return;
+      if (skip[k]) return; // ✅ 人体轮廓等永远不 active
       if (set.has(k)) {
         el.classList.remove("m-dim");
         el.classList.add("m-active");
@@ -248,7 +337,14 @@ export default function MapperSingleFile() {
   // ✅ 新增：自动映射（按 stroke 颜色分桶）
   const autoMap = () => {
     const segStroke = segStrokeRef.current;
-    const entries = Object.entries(segStroke).filter(([_, stroke]) => stroke && stroke !== "none" && !isGrayish(stroke));
+    const skip = segSkipRef.current;
+    const entries = Object.entries(segStroke).filter(([segKey, stroke]) => {
+      if (!stroke || stroke === "none") return false;
+      if (skip[segKey]) return false;
+      // 这里只做一个粗过滤：明显灰色的不要（rgb黑灰等）
+      if (isGrayish(stroke)) return false;
+      return true;
+    });
 
     if (entries.length < 20) {
       alert("Auto-map 失败：当前 SVG 解析到的彩色线段太少（可能 SVG 还没加载好）。");
@@ -278,8 +374,11 @@ export default function MapperSingleFile() {
       next[TWELVE[i]] = top[i].segKeys.slice();
     }
 
-    saveMap(next);
-    setMapData(next);
+    // 再跑一次 clean，避免把 skip 混进来（保险）
+    const cleaned = cleanMapData(next, { skipMap: segSkipRef.current, knownSegs: segStrokeRef.current });
+
+    saveMap(cleaned.out);
+    setMapData(cleaned.out);
 
     const summary = top.map((g, i) => `${TWELVE[i]}<=${g.n}`).join("  ");
     alert("已生成自动映射初稿（按颜色桶）。\n接下来你用“点线段增删”微调就行。\n" + summary);
@@ -396,8 +495,10 @@ export default function MapperSingleFile() {
                         const idx = arr.indexOf(k);
                         if (idx >= 0) arr.splice(idx, 1);
                         next[selected] = arr;
-                        saveMap(next);
-                        return next;
+
+                        const cleaned = cleanMapData(next, { skipMap: segSkipRef.current, knownSegs: segStrokeRef.current });
+                        saveMap(cleaned.out);
+                        return cleaned.out;
                       });
                     }}
                     style={{ cursor: "pointer", borderRadius: 10, border: "1px solid #ddd", background: "#fafafa", padding: "2px 10px", fontWeight: 900 }}
