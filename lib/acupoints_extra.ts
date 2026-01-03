@@ -26,3 +26,4 @@ export const EXTRA_POINTS: ExtraPointsData = {
   updatedAt: "REPLACE_ME",
   points: [],
 };
+
