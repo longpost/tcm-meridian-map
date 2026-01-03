@@ -6,7 +6,7 @@ type ExtraId = "REN" | "DU";
 const EXTRA: ExtraId[] = ["REN", "DU"];
 
 const SVG_SRC = "/assets/12meridians8extra_CVGV.svg";
-const BUILD = "MAPPER_EXTRA_RENDU_BUILD_001";
+const BUILD = "MAPPER_EXTRA_RENDU_BUILD_002_FIX_SELECTED_REF";
 
 // 独立存储：不影响12经
 const STORAGE_KEY = `tcm_mapper_extra::${SVG_SRC}`;
@@ -60,7 +60,7 @@ function isGrayishLoose(stroke: string) {
   return false;
 }
 
-// 这里别太苛刻：REN/DU图里线条可能比12经粗、结构也不同
+// 别太苛刻：REN/DU图线条结构不同
 function looksSegment(el: SVGElement) {
   const tag = el.tagName.toLowerCase();
   if (tag !== "path" && tag !== "polyline" && tag !== "line") return false;
@@ -75,7 +75,6 @@ function looksSegment(el: SVGElement) {
   if (sw <= 0) return false;
   if (sw > 20) return false;
 
-  // 长度过滤：太短的碎片不要
   try {
     const anyEl: any = el as any;
     if (typeof anyEl.getTotalLength === "function") {
@@ -118,12 +117,17 @@ export default function MapperExtraRenDu() {
   const [raw, setRaw] = useState("");
   const [err, setErr] = useState("");
   const [selected, setSelected] = useState<ExtraId>("REN");
+  const selectedRef = useRef<ExtraId>("REN"); // ✅ 关键：永远拿最新selected
   const [mapData, setMapData] = useState<MapData>(emptyMap());
 
   const segSkipRef = useRef<Record<string, boolean>>({});
   const segKnownRef = useRef<Record<string, boolean>>({});
 
   const bucket = mapData[selected] || [];
+
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
 
   useEffect(() => {
     setMapData(loadMap());
@@ -179,7 +183,7 @@ export default function MapperExtraRenDu() {
     `;
     svg.appendChild(peStyle);
 
-    // 删韩文 text（你稳定版同套路）
+    // 删韩文 text
     try {
       const texts = Array.from(svg.querySelectorAll("text"));
       texts.forEach((t) => {
@@ -200,14 +204,13 @@ export default function MapperExtraRenDu() {
 
       const strokeNorm = normStroke(getStroke(el) || "");
       const skip = strokeNorm ? isGrayishLoose(strokeNorm) : false;
+      segKnownRef.current[segKey] = true;
+
       if (skip) {
         el.setAttribute("data-skip", "1");
         segSkipRef.current[segKey] = true;
-        segKnownRef.current[segKey] = true; // 记录存在，但跳过
         return;
       }
-
-      segKnownRef.current[segKey] = true;
 
       const hit = el.cloneNode(true) as SVGElement;
       hit.removeAttribute("id");
@@ -224,13 +227,15 @@ export default function MapperExtraRenDu() {
         evt.preventDefault();
         evt.stopPropagation();
 
+        const cur = selectedRef.current; // ✅ 关键：实时拿当前选中的 REN/DU
+
         setMapData((prev) => {
           const next: MapData = JSON.parse(JSON.stringify(prev));
-          const arr = next[selected] || [];
+          const arr = next[cur] || [];
           const idx = arr.indexOf(segKey);
           if (idx >= 0) arr.splice(idx, 1);
           else arr.push(segKey);
-          next[selected] = arr;
+          next[cur] = arr;
 
           const cleaned = cleanMapData(next, { skipMap: segSkipRef.current, known: segKnownRef.current });
           saveMap(cleaned.out);
@@ -241,13 +246,16 @@ export default function MapperExtraRenDu() {
 
     // ✅ 自动清理：把旧映射里的 skip / 不存在 segKey 清掉
     try {
-      const cleaned = cleanMapData(mapData, { skipMap: segSkipRef.current, known: segKnownRef.current });
+      const cleaned = cleanMapData(loadMap(), { skipMap: segSkipRef.current, known: segKnownRef.current });
       if (cleaned.changed) {
         saveMap(cleaned.out);
         setMapData(cleaned.out);
+      } else {
+        // 同步一下，防止首次打开没读到
+        setMapData(loadMap());
       }
     } catch {}
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, [raw]);
 
   // bucket -> 动画（先全清再设）
@@ -287,7 +295,7 @@ export default function MapperExtraRenDu() {
     <main style={{ maxWidth: 1280, margin: "0 auto", padding: 16 }}>
       <div style={{ fontSize: 22, fontWeight: 1000 }}>{BUILD} — Mapper Extra（任督）</div>
       <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
-        独立存储，不影响12经：<code>{STORAGE_KEY}</code>
+        独立存储：<code>{STORAGE_KEY}</code>
       </div>
 
       <div style={{ marginTop: 10 }}>
@@ -383,12 +391,13 @@ export default function MapperExtraRenDu() {
                   <code style={{ fontSize: 11 }}>{k}</code>
                   <button
                     onClick={() => {
+                      const cur = selectedRef.current;
                       setMapData((prev) => {
                         const next: MapData = JSON.parse(JSON.stringify(prev));
-                        const arr = next[selected] || [];
+                        const arr = next[cur] || [];
                         const idx = arr.indexOf(k);
                         if (idx >= 0) arr.splice(idx, 1);
-                        next[selected] = arr;
+                        next[cur] = arr;
                         const cleaned = cleanMapData(next, { skipMap: segSkipRef.current, known: segKnownRef.current });
                         saveMap(cleaned.out);
                         return cleaned.out;
@@ -407,3 +416,4 @@ export default function MapperExtraRenDu() {
     </main>
   );
 }
+
