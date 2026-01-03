@@ -11,9 +11,13 @@ export default function Page() {
       </div>
 
       <div style={{ marginTop: 16, display: "grid", gap: 10 }}>
-        <a href="/viewer" style={linkStyle}>① Viewer（点经络 → 流动高亮）</a>
+        <a href="/viewer" style={linkStyle}>① Viewer（12经：点经络 → 流动高亮）</a>
         <a href="/quiz" style={linkStyle}>② Quiz（练习：点对指定经络）</a>
         <a href="/mapper" style={linkStyle}>③ Mapper（管理员：维护/导出映射）</a>
+
+        <div style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>—— Extra（任督：独立一套，不影响12经）</div>
+        <a href="/viewer-extra" style={linkStyle}>④ Viewer-Extra（任督：REN/DU）</a>
+        <a href="/mapper-extra" style={linkStyle}>⑤ Mapper-Extra（任督：维护/导出映射）</a>
       </div>
     </main>
   );
